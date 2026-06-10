@@ -1,0 +1,13 @@
+.vscode/**
+src/**
+scripts/**
+dist/live-e2e.cjs
+webview/**
+tests/**
+node_modules/**
+coverage/**
+esbuild.mjs
+vitest.config.ts
+tsconfig.json
+**/*.map
+.gitignore

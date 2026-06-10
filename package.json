@@ -1,0 +1,123 @@
+{
+  "name": "best-ide-agent",
+  "displayName": "Best IDE Agent",
+  "description": "Agentic coding assistant powered by local LLMs via LM Studio (or any OpenAI-compatible endpoint).",
+  "version": "0.1.0",
+  "publisher": "best-ide",
+  "private": true,
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.96.0"
+  },
+  "categories": [
+    "AI",
+    "Chat"
+  ],
+  "main": "./dist/extension.js",
+  "activationEvents": [],
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "bestIde",
+          "title": "Best IDE Agent",
+          "icon": "media/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "bestIde": [
+        {
+          "type": "webview",
+          "id": "bestIde.chatView",
+          "name": "Agent"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "bestIde.newChat",
+        "title": "Best IDE: New Chat",
+        "icon": "$(add)"
+      },
+      {
+        "command": "bestIde.pickModel",
+        "title": "Best IDE: Pick Model"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "bestIde.newChat",
+          "when": "view == bestIde.chatView",
+          "group": "navigation"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Best IDE Agent",
+      "properties": {
+        "bestIde.baseUrl": {
+          "type": "string",
+          "default": "http://localhost:1234/v1",
+          "description": "Base URL of the OpenAI-compatible API (LM Studio local server by default)."
+        },
+        "bestIde.apiKey": {
+          "type": "string",
+          "default": "",
+          "description": "API token sent as a Bearer Authorization header. Required if your LM Studio server has authentication enabled."
+        },
+        "bestIde.model": {
+          "type": "string",
+          "default": "",
+          "description": "Model id to use. Leave empty to use the first model reported by the server."
+        },
+        "bestIde.temperature": {
+          "type": "number",
+          "default": 0.2,
+          "minimum": 0,
+          "maximum": 2,
+          "description": "Sampling temperature for the model."
+        },
+        "bestIde.autoApprove": {
+          "type": "boolean",
+          "default": false,
+          "description": "Automatically approve mutating tools (write_file, run_command) without asking. Use with care."
+        },
+        "bestIde.maxSteps": {
+          "type": "number",
+          "default": 25,
+          "description": "Maximum number of agent loop steps (model turns) per request."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "node esbuild.mjs",
+    "watch": "node esbuild.mjs --watch",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "coverage": "vitest run --coverage",
+    "package": "npm run typecheck && npm run test && npm run build",
+    "vsix": "node esbuild.mjs --production && vsce package --no-dependencies --allow-missing-repository"
+  },
+  "dependencies": {
+    "diff": "^7.0.0",
+    "marked": "^15.0.0"
+  },
+  "devDependencies": {
+    "@types/diff": "^6.0.0",
+    "@types/node": "^22.0.0",
+    "@types/react": "^18.3.0",
+    "@types/react-dom": "^18.3.0",
+    "@types/vscode": "^1.96.0",
+    "@vitest/coverage-v8": "^3.0.0",
+    "@vscode/vsce": "^3.9.2",
+    "esbuild": "^0.25.0",
+    "react": "^18.3.0",
+    "react-dom": "^18.3.0",
+    "typescript": "^5.7.0",
+    "vitest": "^3.0.0"
+  }
+}
