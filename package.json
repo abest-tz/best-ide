@@ -1,111 +1,330 @@
 {
-  "name": "best-ide-agent",
-  "displayName": "Best IDE Agent",
-  "description": "Agentic coding assistant powered by local LLMs via LM Studio (or any OpenAI-compatible endpoint).",
-  "version": "0.1.0",
-  "publisher": "best-ide",
-  "private": true,
-  "license": "MIT",
-  "engines": {
-    "vscode": "^1.96.0"
-  },
+  "activationEvents": [],
   "categories": [
     "AI",
     "Chat"
   ],
-  "main": "./dist/extension.js",
-  "activationEvents": [],
   "contributes": {
-    "viewsContainers": {
-      "activitybar": [
+    "commands": [
+      {
+        "command": "bestIde.newChat",
+        "icon": "$(add)",
+        "title": "Best IDE: New Chat"
+      },
+      {
+        "command": "bestIde.searchThreads",
+        "icon": "$(history)",
+        "title": "Best IDE: Open Conversation Thread"
+      },
+      {
+        "command": "bestIde.exportThread",
+        "icon": "$(export)",
+        "title": "Best IDE: Export Current Conversation"
+      },
+      {
+        "command": "bestIde.showTelemetrySummary",
+        "icon": "$(pulse)",
+        "title": "Best IDE: Show Telemetry Summary"
+      },
+      {
+        "command": "bestIde.resetTelemetry",
+        "icon": "$(trash)",
+        "title": "Best IDE: Reset Telemetry Summary"
+      },
+      {
+        "command": "bestIde.pickModel",
+        "title": "Best IDE: Pick Model"
+      },
+      {
+        "command": "bestIde.focusChat",
+        "icon": "$(comment-discussion)",
+        "title": "Best IDE: Focus Chat Input"
+      },
+      {
+        "command": "bestIde.inlineEdit",
+        "icon": "$(edit)",
+        "title": "Best IDE: Inline Edit Selection"
+      },
+      {
+        "command": "bestIde.acceptAgentChange",
+        "icon": "$(check)",
+        "title": "Best IDE: Accept Agent Change"
+      },
+      {
+        "command": "bestIde.rejectAgentChange",
+        "icon": "$(close)",
+        "title": "Best IDE: Reject Agent Change"
+      },
+      {
+        "command": "bestIde.acceptAllAgentChanges",
+        "icon": "$(check-all)",
+        "title": "Best IDE: Accept All Agent Changes"
+      },
+      {
+        "command": "bestIde.revertLastAgentTurn",
+        "icon": "$(discard)",
+        "title": "Best IDE: Revert Last Agent Turn"
+      }
+    ],
+    "configuration": {
+      "properties": {
+        "bestIde.apiKey": {
+          "default": "",
+          "description": "API token sent as a Bearer Authorization header. Required if your LM Studio server has authentication enabled.",
+          "type": "string"
+        },
+        "bestIde.autoApprove": {
+          "default": false,
+          "description": "Automatically approve pre-execution mutating tools (currently run_command) without asking. Use with care.",
+          "type": "boolean"
+        },
+        "bestIde.baseUrl": {
+          "default": "http://localhost:1234/v1",
+          "description": "Base URL of the OpenAI-compatible API (LM Studio local server by default).",
+          "type": "string"
+        },
+        "bestIde.backends": {
+          "default": {},
+          "markdownDescription": "Optional named backend profiles for multi-backend routing. Example: `{ \"local\": { \"baseUrl\": \"http://localhost:1234/v1\", \"role\": \"local\" }, \"cloud\": { \"baseUrl\": \"https://api.openai.com/v1\", \"apiKey\": \"...\", \"role\": \"quality\", \"model\": \"gpt-4.1\" } }`. Supports `baseUrl`, `apiKey`, `role` (`local`/`cost`/`quality`/`general`), `model`, `embeddingModel`, `inlineCompletionsModel`, mode-specific `agentModel`/`askModel`/`composerModel`, or nested `models`.",
+          "type": "object"
+        },
+        "bestIde.backendPreset": {
+          "default": "local",
+          "enum": [
+            "local",
+            "cost",
+            "quality"
+          ],
+          "markdownDescription": "Default backend priority preset when explicit route overrides are not set. `local` prioritizes local inference, `cost` prioritizes cheaper cloud/local routes, and `quality` prioritizes highest-quality routes.",
+          "type": "string"
+        },
+        "bestIde.backendRouting": {
+          "default": {},
+          "markdownDescription": "Optional per-operation backend fallback order. Supports arrays: `chat`, `models`, `embeddings`, and `inlineCompletions`, each listing backend ids from `bestIde.backends`.",
+          "type": "object"
+        },
+        "bestIde.chatMode": {
+          "default": "agent",
+          "enum": [
+            "agent",
+            "composer",
+            "ask"
+          ],
+          "markdownDescription": "Chat mode. Use `agent` for standard tool-assisted chats, `composer` for plan-and-apply multi-file tasks, or `ask` for read-only conversations.",
+          "type": "string"
+        },
+        "bestIde.embeddingModel": {
+          "default": "",
+          "description": "Embedding model id for semantic_search. Set to a model exposed by your OpenAI-compatible endpoint's /embeddings API.",
+          "type": "string"
+        },
+        "bestIde.inlineCompletions.enabled": {
+          "default": false,
+          "markdownDescription": "Enable Tab/ghost-text code completion with a lightweight model loop.",
+          "type": "boolean"
+        },
+        "bestIde.inlineCompletions.model": {
+          "default": "",
+          "description": "Optional model id dedicated to inline completions. Falls back to bestIde.model, then the first model from /models.",
+          "type": "string"
+        },
+        "bestIde.maxSteps": {
+          "default": 25,
+          "description": "Maximum number of agent loop steps (model turns) per request.",
+          "type": "number"
+        },
+        "bestIde.telemetry.enabled": {
+          "default": false,
+          "markdownDescription": "Opt-in aggregated telemetry for Best IDE (tool success rates, latency, and acceptance/approval quality signals). No prompts, file contents, or command output are collected.",
+          "type": "boolean"
+        },
+        "bestIde.runCommand.allowlist": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "markdownDescription": "Optional allowlist of executable names for `run_command` in the integrated terminal. When this list is non-empty, every command segment (`&&`, `|`, `;`) must use an allowlisted executable.",
+          "type": "array"
+        },
+        "bestIde.runCommand.denylist": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "markdownDescription": "Executable names blocked for `run_command`. Denylist entries always override the allowlist.",
+          "type": "array"
+        },
+        "bestIde.runCommand.cwd": {
+          "default": "",
+          "markdownDescription": "Optional workspace-relative working directory for `run_command`. Empty uses the workspace root.",
+          "type": "string"
+        },
+        "bestIde.runCommand.env": {
+          "default": {},
+          "markdownDescription": "Optional environment variables injected into `run_command` sessions. Non-string values are ignored.",
+          "type": "object"
+        },
+        "bestIde.runCommand.inheritEnv": {
+          "default": true,
+          "markdownDescription": "Whether `run_command` inherits the parent process environment. Disable to run with only `bestIde.runCommand.env` values.",
+          "type": "boolean"
+        },
+        "bestIde.runCommand.timeoutMs": {
+          "default": 60000,
+          "description": "Default timeout in milliseconds for `run_command` when no per-call timeout is provided.",
+          "maximum": 600000,
+          "minimum": 100,
+          "type": "number"
+        },
+        "bestIde.runCommand.maxTimeoutMs": {
+          "default": 300000,
+          "description": "Maximum timeout in milliseconds allowed for `run_command` requests.",
+          "maximum": 600000,
+          "minimum": 100,
+          "type": "number"
+        },
+        "bestIde.mcp.requestTimeoutMs": {
+          "default": 15000,
+          "description": "Timeout in milliseconds for MCP list/call requests.",
+          "maximum": 120000,
+          "minimum": 1000,
+          "type": "number"
+        },
+        "bestIde.mcp.servers": {
+          "default": {},
+          "markdownDescription": "Optional MCP server definitions keyed by server name. Each entry supports `{ command, args?, env?, cwd? }` for stdio launch.",
+          "type": "object"
+        },
+        "bestIde.model": {
+          "default": "",
+          "description": "Model id to use. Leave empty to use the first model reported by the server.",
+          "type": "string"
+        },
+        "bestIde.modelRouting": {
+          "default": {},
+          "markdownDescription": "Optional model routing overrides by mode/use-case. Supports `agent`, `ask`, `composer`, `embeddings`, and `inlineCompletions`.",
+          "type": "object"
+        },
+        "bestIde.temperature": {
+          "default": 0.2,
+          "description": "Sampling temperature for the model.",
+          "maximum": 2,
+          "minimum": 0,
+          "type": "number"
+        }
+      },
+      "title": "Best IDE Agent"
+    },
+    "keybindings": [
+      {
+        "command": "bestIde.inlineEdit",
+        "key": "ctrl+k ctrl+i",
+        "mac": "cmd+k",
+        "when": "editorTextFocus && editorHasSelection && !editorReadonly"
+      },
+      {
+        "command": "bestIde.focusChat",
+        "key": "ctrl+alt+c",
+        "mac": "cmd+alt+c"
+      },
+      {
+        "command": "bestIde.newChat",
+        "key": "ctrl+alt+n",
+        "mac": "cmd+alt+n",
+        "when": "view == bestIde.chatView"
+      },
+      {
+        "command": "bestIde.acceptAgentChange",
+        "key": "ctrl+alt+a",
+        "mac": "cmd+alt+a",
+        "when": "resourceScheme == bestide-pending && bestIde.hasPendingChanges"
+      },
+      {
+        "command": "bestIde.rejectAgentChange",
+        "key": "ctrl+alt+r",
+        "mac": "cmd+alt+r",
+        "when": "resourceScheme == bestide-pending && bestIde.hasPendingChanges"
+      }
+    ],
+    "menus": {
+      "editor/title": [
         {
-          "id": "bestIde",
-          "title": "Best IDE Agent",
-          "icon": "media/icon.svg"
+          "command": "bestIde.acceptAgentChange",
+          "group": "navigation",
+          "when": "resourceScheme == bestide-pending",
+          "title": "Accept Agent Change"
+        },
+        {
+          "command": "bestIde.rejectAgentChange",
+          "group": "navigation@1",
+          "when": "resourceScheme == bestide-pending",
+          "title": "Reject Agent Change"
+        },
+        {
+          "command": "bestIde.acceptAllAgentChanges",
+          "group": "navigation@2",
+          "when": "resourceScheme == bestide-pending && bestIde.hasPendingChanges",
+          "title": "Accept All Agent Changes"
+        }
+      ],
+      "view/title": [
+        {
+          "command": "bestIde.newChat",
+          "group": "navigation",
+          "when": "view == bestIde.chatView",
+          "title": "Best IDE: New Chat"
+        },
+        {
+          "command": "bestIde.searchThreads",
+          "group": "navigation@0.5",
+          "when": "view == bestIde.chatView && bestIde.hasMultipleThreads",
+          "title": "Best IDE: Open Conversation Thread"
+        },
+        {
+          "command": "bestIde.exportThread",
+          "group": "navigation@0.6",
+          "when": "view == bestIde.chatView && bestIde.hasThreadTranscript",
+          "title": "Best IDE: Export Current Conversation"
+        },
+        {
+          "command": "bestIde.acceptAllAgentChanges",
+          "group": "navigation@1",
+          "when": "view == bestIde.chatView && bestIde.hasPendingChanges",
+          "title": "Accept All Agent Changes"
+        },
+        {
+          "command": "bestIde.revertLastAgentTurn",
+          "group": "navigation@2",
+          "when": "view == bestIde.chatView && bestIde.hasTurnCheckpoint",
+          "title": "Best IDE: Revert Last Agent Turn"
         }
       ]
     },
     "views": {
       "bestIde": [
         {
-          "type": "webview",
           "id": "bestIde.chatView",
-          "name": "Agent"
+          "name": "Agent",
+          "type": "webview"
         }
       ]
     },
-    "commands": [
-      {
-        "command": "bestIde.newChat",
-        "title": "Best IDE: New Chat",
-        "icon": "$(add)"
-      },
-      {
-        "command": "bestIde.pickModel",
-        "title": "Best IDE: Pick Model"
-      }
-    ],
-    "menus": {
-      "view/title": [
+    "viewsContainers": {
+      "secondarySidebar": [
         {
-          "command": "bestIde.newChat",
-          "when": "view == bestIde.chatView",
-          "group": "navigation"
+          "icon": "media/icon.svg",
+          "id": "bestIde",
+          "title": "Best IDE Agent"
         }
       ]
-    },
-    "configuration": {
-      "title": "Best IDE Agent",
-      "properties": {
-        "bestIde.baseUrl": {
-          "type": "string",
-          "default": "http://localhost:1234/v1",
-          "description": "Base URL of the OpenAI-compatible API (LM Studio local server by default)."
-        },
-        "bestIde.apiKey": {
-          "type": "string",
-          "default": "",
-          "description": "API token sent as a Bearer Authorization header. Required if your LM Studio server has authentication enabled."
-        },
-        "bestIde.model": {
-          "type": "string",
-          "default": "",
-          "description": "Model id to use. Leave empty to use the first model reported by the server."
-        },
-        "bestIde.temperature": {
-          "type": "number",
-          "default": 0.2,
-          "minimum": 0,
-          "maximum": 2,
-          "description": "Sampling temperature for the model."
-        },
-        "bestIde.autoApprove": {
-          "type": "boolean",
-          "default": false,
-          "description": "Automatically approve mutating tools (write_file, run_command) without asking. Use with care."
-        },
-        "bestIde.maxSteps": {
-          "type": "number",
-          "default": 25,
-          "description": "Maximum number of agent loop steps (model turns) per request."
-        }
-      }
     }
   },
-  "scripts": {
-    "build": "node esbuild.mjs",
-    "watch": "node esbuild.mjs --watch",
-    "typecheck": "tsc --noEmit",
-    "test": "vitest run",
-    "test:watch": "vitest",
-    "coverage": "vitest run --coverage",
-    "package": "npm run typecheck && npm run test && npm run build",
-    "vsix": "node esbuild.mjs --production && vsce package --no-dependencies --allow-missing-repository"
-  },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "diff": "^7.0.0",
     "marked": "^15.0.0"
   },
+  "description": "Agentic coding assistant powered by local LLMs via LM Studio (or any OpenAI-compatible endpoint).",
   "devDependencies": {
     "@types/diff": "^6.0.0",
     "@types/node": "^22.0.0",
@@ -119,5 +338,29 @@
     "react-dom": "^18.3.0",
     "typescript": "^5.7.0",
     "vitest": "^3.0.0"
-  }
+  },
+  "displayName": "Best IDE Agent",
+  "engines": {
+    "vscode": "^1.96.0"
+  },
+  "license": "MIT",
+  "main": "./dist/extension.js",
+  "name": "best-ide-agent",
+  "private": true,
+  "publisher": "best-ide",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/your-username/best-ide-agent.git"
+  },
+  "scripts": {
+    "build": "node esbuild.mjs",
+    "coverage": "vitest run --coverage",
+    "package": "npm run typecheck && npm run test && npm run build",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit",
+    "vsix": "node esbuild.mjs --production && vsce package --no-dependencies --allow-missing-repository",
+    "watch": "node esbuild.mjs --watch"
+  },
+  "version": "0.1.0"
 }

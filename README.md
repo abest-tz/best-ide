@@ -2,13 +2,20 @@
 
 An agentic coding assistant for VS Code powered by **local LLMs** via [LM Studio](https://lmstudio.ai) (or any OpenAI-compatible endpoint). No cloud, no Copilot dependency.
 
-This is the MVP extension for a future VS Code fork — the agent core under `src/core/` is editor-agnostic and designed to be embedded into the fork later.
+This is the MVP extension for a future VS Code fork — the agent core under `src/core/` is editor-agnostic and designed to be embedded into the fork later. See [ROADMAP.md](ROADMAP.md) for planned features.
 
 ## Features
 
 - Chat sidebar with streaming responses from your local model
-- Agentic tool loop: the model can read files, list directories, search, write files, and run terminal commands
-- Approval flow: mutating tools (`write_file`, `run_command`) require explicit user approval, with a diff preview for file writes
+- Agentic tool loop: file/dir search, regex + semantic code search, targeted `search_replace`, diagnostics/symbol lookup, git status/diff, file writes, and terminal commands
+- Optional MCP tool bridge: connect stdio MCP servers and call external tools from agent runs
+- Chat defaults to the right-hand auxiliary sidebar
+- Editor-native file review: agent edits open as pending diffs with Accept/Reject/Accept All, plus one-click revert of the last accepted turn
+- Approval flow: `run_command` requires explicit pre-execution approval
+- Ask/Agent/Composer chat modes: use Ask for read-only analysis, Agent for standard tool use, or Composer for structured plan-and-apply multi-file tasks
+- Project guidance via `.bestide/rules.md`, plus task-scoped skills loaded with `@skill:name` from `.bestide/skills/`
+- Graceful step-limit resume: continue or stop when `bestIde.maxSteps` is reached
+- Optional Tab/ghost-text code completion via VS Code inline completions
 - Model picker backed by `GET /v1/models`
 - Works with any OpenAI-compatible server (LM Studio, Ollama, llama.cpp server, vLLM, ...)
 
@@ -57,15 +64,49 @@ For hacking on the extension itself, skip the VSIX: run `./setup_and_run.sh` (or
 ## Settings
 
 
-| Setting               | Default                    | Description                                         |
-| --------------------- | -------------------------- | --------------------------------------------------- |
-| `bestIde.baseUrl`     | `http://localhost:1234/v1` | OpenAI-compatible API base URL                      |
-| `bestIde.apiKey`      | *(empty)*                  | Bearer token, required if LM Studio auth is enabled |
-| `bestIde.model`       | *(first available)*        | Model id to use                                     |
-| `bestIde.temperature` | `0.2`                      | Sampling temperature                                |
-| `bestIde.autoApprove` | `false`                    | Skip approval for mutating tools                    |
-| `bestIde.maxSteps`    | `25`                       | Max agent loop steps per request                    |
+| Setting                              | Default                    | Description |
+| ------------------------------------ | -------------------------- | ----------- |
+| `bestIde.baseUrl`                    | `http://localhost:1234/v1` | Legacy/default OpenAI-compatible API base URL (used for the built-in `local` backend profile). |
+| `bestIde.apiKey`                     | *(empty)*                  | Legacy/default bearer token for the built-in `local` backend profile. |
+| `bestIde.backends`                   | `{}`                       | Optional named backend profiles for multi-backend routing (local + cloud fallback). |
+| `bestIde.backendPreset`              | `local`                    | Route preset when explicit routing is not set: `local`, `cost`, or `quality`. |
+| `bestIde.backendRouting`             | `{}`                       | Optional per-operation backend fallback order: `chat`, `models`, `embeddings`, `inlineCompletions`. |
+| `bestIde.model`                      | *(first available)*        | Default picked model id (used when no per-mode routing override is configured). |
+| `bestIde.modelRouting`               | `{}`                       | Optional model overrides by route: `agent`, `ask`, `composer`, `embeddings`, `inlineCompletions`. |
+| `bestIde.embeddingModel`             | *(empty)*                  | Legacy/default embedding model id (used by the built-in `local` backend profile). |
+| `bestIde.mcp.servers`                | `{}`                       | Optional MCP servers keyed by name (`command`, optional `args`/`env`/`cwd`). |
+| `bestIde.mcp.requestTimeoutMs`       | `15000`                    | Timeout for MCP list/call requests. |
+| `bestIde.chatMode`                   | `agent`                    | `agent` for standard tool use, `composer` for structured multi-file plan+apply, `ask` for read-only chat. |
+| `bestIde.temperature`                | `0.2`                      | Sampling temperature. |
+| `bestIde.autoApprove`                | `false`                    | Skip approval for mutating tools. |
+| `bestIde.runCommand.allowlist`       | `[]`                       | Optional allowlist of executable names for `run_command`; when set, all command segments must be allowlisted. |
+| `bestIde.runCommand.denylist`        | `[]`                       | Executable names blocked for `run_command`; denylist always overrides allowlist. |
+| `bestIde.runCommand.cwd`             | *(workspace root)*         | Optional workspace-relative working directory sandbox for `run_command`. |
+| `bestIde.runCommand.env`             | `{}`                       | Optional environment variables injected into command sessions. |
+| `bestIde.runCommand.inheritEnv`      | `true`                     | Inherit parent process environment; disable for strict env sandboxing. |
+| `bestIde.runCommand.timeoutMs`       | `60000`                    | Default timeout for `run_command` when the tool call omits `timeout_ms`. |
+| `bestIde.runCommand.maxTimeoutMs`    | `300000`                   | Maximum timeout policy enforced for `run_command`. |
+| `bestIde.maxSteps`                   | `25`                       | Max model turns per run before prompting to continue or stop. |
+| `bestIde.telemetry.enabled`          | `false`                    | Opt-in aggregate telemetry for tool success rates, latency, and acceptance/approval quality signals. |
+| `bestIde.inlineCompletions.enabled`  | `false`                    | Enable Tab/ghost-text inline code completion. |
+| `bestIde.inlineCompletions.model`    | *(empty)*                  | Legacy/default dedicated inline completion model id for the built-in `local` backend profile. |
 
+
+## Privacy and offline story
+
+- By default, Best IDE is local-first: point `bestIde.baseUrl` (or your `local` backend profile) at a local OpenAI-compatible server such as LM Studio.
+- Extension data stays on your machine: conversation threads are saved in local VS Code extension state, and agent file edits happen in your workspace.
+- Nothing is sent to Best IDE-managed cloud services because this project does not run one. Network traffic goes only to the model/MCP endpoints you configure.
+- If you add non-local backends (for fallback, cost, or quality routing), requests for those operations are sent to those configured providers by design.
+- Telemetry is opt-in (`bestIde.telemetry.enabled`, default `false`) and aggregates counters only (tool success/failure + latency, model-turn latency, approval/acceptance rates). It does **not** include prompts, file contents, or command output.
+- You can inspect telemetry from the command palette with `Best IDE: Show Telemetry Summary` and clear it with `Best IDE: Reset Telemetry Summary`.
+
+## Rules and skills
+
+- Add project-wide guardrails in `.bestide/rules.md` (automatically merged into the system prompt).
+- Add reusable task instructions under `.bestide/skills/`.
+- Reference a skill in chat with `@skill:name` (for example `@skill:test-driven` loads `.bestide/skills/test-driven.md` if it exists).
+- Skills can also be folders containing `SKILL.md` (for example `.bestide/skills/refactor/SKILL.md`).
 
 ## Development
 
@@ -99,5 +140,5 @@ The webview talks to the extension host over `postMessage`. The extension host r
 
 - Tool-calling quality varies a lot between local models; small models may emit malformed calls
 - Single conversation at a time; history is in-memory only
-- `run_command` executes via `child_process` with a timeout, not in the integrated terminal
+- `run_command` depends on VS Code terminal shell integration; if shell integration is unavailable, command execution is blocked
 

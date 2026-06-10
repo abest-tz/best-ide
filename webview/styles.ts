@@ -10,7 +10,33 @@ body {
 }
 #root { display: flex; flex-direction: column; height: 100vh; }
 
-.app { display: flex; flex-direction: column; height: 100vh; }
+.app { display: flex; flex-direction: column; height: 100vh; position: relative; }
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.skip-links { position: relative; }
+.skip-link {
+  position: absolute;
+  left: 8px;
+  top: -40px;
+  z-index: 2;
+  border: 1px solid var(--vscode-focusBorder);
+  border-radius: 4px;
+  background: var(--vscode-editor-background);
+  color: var(--vscode-foreground);
+  padding: 4px 8px;
+}
+.skip-link:focus { top: 6px; }
 
 .header {
   display: flex;
@@ -21,8 +47,6 @@ body {
   flex-shrink: 0;
 }
 .header select {
-  flex: 1;
-  min-width: 0;
   background: var(--vscode-dropdown-background);
   color: var(--vscode-dropdown-foreground);
   border: 1px solid var(--vscode-dropdown-border);
@@ -30,7 +54,16 @@ body {
   padding: 2px 4px;
   font-size: inherit;
 }
-.status-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+.header .model-select { flex: 1; min-width: 0; }
+.header .mode-select { flex: 0 0 auto; min-width: 98px; }
+.connection-indicator { display: inline-flex; align-items: center; }
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  border: 1px solid var(--vscode-panel-border);
+}
 .status-dot.connected { background: var(--vscode-testing-iconPassed, #2ea043); }
 .status-dot.disconnected { background: var(--vscode-testing-iconFailed, #f85149); }
 
@@ -136,13 +169,13 @@ body {
   font-family: var(--vscode-editor-font-family);
   font-size: 0.95em;
 }
-.diff-add { color: var(--vscode-gitDecoration-addedResourceForeground, #2ea043); }
-.diff-del { color: var(--vscode-gitDecoration-deletedResourceForeground, #f85149); }
+.diff-add { color: var(--vscode-gitDecoration-addedResourceForeground, #2ea043); font-weight: 600; }
+.diff-del { color: var(--vscode-gitDecoration-deletedResourceForeground, #f85149); font-weight: 600; }
 .approval-actions { display: flex; gap: 6px; padding: 0 10px 8px; }
 .approval-resolved { padding: 0 10px 8px; color: var(--vscode-descriptionForeground); font-style: italic; }
 
 .button {
-  border: none;
+  border: 1px solid transparent;
   border-radius: 3px;
   padding: 4px 12px;
   cursor: pointer;
@@ -217,5 +250,45 @@ body {
   color: var(--vscode-descriptionForeground);
   font-style: italic;
   margin-bottom: 10px;
+}
+
+.header select:focus-visible,
+.icon-button:focus-visible,
+.button:focus-visible,
+.composer textarea:focus-visible,
+.transcript:focus-visible,
+.tool-card summary:focus-visible,
+.skip-link:focus-visible {
+  outline: 2px solid var(--vscode-focusBorder);
+  outline-offset: 2px;
+}
+
+@media (forced-colors: active) {
+  .header,
+  .composer,
+  .transcript,
+  .message.user,
+  .message.error,
+  .tool-card,
+  .approval-card,
+  .error-banner,
+  .header select,
+  .button,
+  .icon-button,
+  .composer textarea {
+    border-color: var(--vscode-contrastBorder, CanvasText);
+  }
+
+  .status-dot {
+    forced-color-adjust: none;
+    border-color: CanvasText;
+  }
+  .status-dot.connected { background: CanvasText; }
+  .status-dot.disconnected { background: Canvas; }
+
+  .diff-add,
+  .diff-del {
+    text-decoration: underline;
+  }
 }
 `;

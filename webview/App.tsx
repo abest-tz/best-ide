@@ -1,6 +1,11 @@
 import { marked } from 'marked';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { ModelOption, ToWebviewMessage } from '../src/shared/protocol';
+import type {
+  ChatMode,
+  ModelOption,
+  PersistedTranscriptItem,
+  ToWebviewMessage,
+} from '../src/shared/protocol';
 import { postToExtension } from './vscodeApi';
 
 type TranscriptItem =
@@ -17,6 +22,22 @@ type TranscriptItem =
       resolved: boolean;
       approved?: boolean;
     }
+  | {
+      kind: 'stepLimit';
+      id: string;
+      stepLimit: number;
+      completedSteps: number;
+      resolved: boolean;
+      continued?: boolean;
+    }
+  | {
+      kind: 'pendingChange';
+      id: string;
+      path: string;
+      turnId: number;
+      resolved: boolean;
+      accepted?: boolean;
+    }
   | { kind: 'notice'; text: string }
   | { kind: 'error'; text: string };
 
@@ -30,7 +51,7 @@ function Markdown({ text }: { text: string }): React.JSX.Element {
 function DiffView({ diff }: { diff: string }): React.JSX.Element {
   const lines = diff.split('\n').filter((line) => !line.startsWith('\\ No newline'));
   return (
-    <pre className="diff">
+    <pre className="diff" role="region" aria-label="Diff preview">
       {lines.map((line, i) => {
         const cls = line.startsWith('+') ? 'diff-add' : line.startsWith('-') ? 'diff-del' : '';
         return (
@@ -45,10 +66,12 @@ function DiffView({ diff }: { diff: string }): React.JSX.Element {
 
 function ToolCard({ item }: { item: Extract<TranscriptItem, { kind: 'tool' }> }): React.JSX.Element {
   return (
-    <details className="tool-card">
+    <details className="tool-card" aria-label={`Tool call ${item.name}`}>
       <summary>
         <span className="tool-name">{item.name}</span>
-        <span className="tool-status">{item.result === undefined ? 'running...' : 'done'}</span>
+        <span className="tool-status" aria-live="polite">
+          {item.result === undefined ? 'running...' : 'done'}
+        </span>
       </summary>
       <div className="tool-body">
         <pre>{item.args || '{}'}</pre>
@@ -67,7 +90,7 @@ function ApprovalCard({
     postToExtension({ type: 'approvalResponse', id: item.id, approved });
   };
   return (
-    <div className="approval-card">
+    <div className="approval-card" role="group" aria-label="Approval request">
       <div className="approval-title">
         {item.name === 'write_file' ? 'Write file' : item.name === 'run_command' ? 'Run command' : item.name}
       </div>
@@ -81,13 +104,15 @@ function ApprovalCard({
         )}
       </div>
       {item.resolved ? (
-        <div className="approval-resolved">{item.approved ? 'Approved' : 'Rejected'}</div>
+        <div className="approval-resolved" role="status">
+          {item.approved ? 'Approved' : 'Rejected'}
+        </div>
       ) : (
         <div className="approval-actions">
-          <button className="button primary" onClick={() => respond(true)}>
+          <button className="button primary" aria-label="Approve request" onClick={() => respond(true)}>
             Approve
           </button>
-          <button className="button secondary" onClick={() => respond(false)}>
+          <button className="button secondary" aria-label="Reject request" onClick={() => respond(false)}>
             Reject
           </button>
         </div>
@@ -96,16 +121,120 @@ function ApprovalCard({
   );
 }
 
+function StepLimitCard({
+  item,
+}: {
+  item: Extract<TranscriptItem, { kind: 'stepLimit' }>;
+}): React.JSX.Element {
+  const respond = (continueRun: boolean): void => {
+    postToExtension({ type: 'stepLimitResponse', id: item.id, continueRun });
+  };
+  return (
+    <div className="approval-card" role="group" aria-label="Step limit decision">
+      <div className="approval-title">Step limit reached</div>
+      <div className="approval-body">
+        <pre className="command">
+          Reached {item.completedSteps} model turns (limit {item.stepLimit}). Continue for another{' '}
+          {item.stepLimit} turns?
+        </pre>
+      </div>
+      {item.resolved ? (
+        <div className="approval-resolved" role="status">
+          {item.continued ? 'Continuing' : 'Stopped'}
+        </div>
+      ) : (
+        <div className="approval-actions">
+          <button className="button primary" aria-label="Continue run" onClick={() => respond(true)}>
+            Continue
+          </button>
+          <button className="button secondary" aria-label="Stop run" onClick={() => respond(false)}>
+            Stop
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function PendingChangeCard({
+  item,
+}: {
+  item: Extract<TranscriptItem, { kind: 'pendingChange' }>;
+}): React.JSX.Element {
+  const respond = (accepted: boolean): void => {
+    postToExtension({ type: 'pendingChangeDecision', id: item.id, accepted });
+  };
+
+  return (
+    <div className="approval-card" role="group" aria-label={`Pending change ${item.path}`}>
+      <div className="approval-title">Pending file change</div>
+      <div className="approval-body">
+        <pre className="command">{item.path}</pre>
+      </div>
+      {item.resolved ? (
+        <div className="approval-resolved" role="status">
+          {item.accepted ? 'Accepted' : 'Rejected'}
+        </div>
+      ) : (
+        <div className="approval-actions">
+          <button className="button primary" aria-label={`Accept change for ${item.path}`} onClick={() => respond(true)}>
+            Accept
+          </button>
+          <button className="button secondary" aria-label={`Reject change for ${item.path}`} onClick={() => respond(false)}>
+            Reject
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function restoreTranscript(items: PersistedTranscriptItem[]): TranscriptItem[] {
+  return items.map((item) => {
+    if (item.kind === 'assistant') {
+      return { kind: 'assistant', text: item.text, closed: true };
+    }
+    if (item.kind === 'user') {
+      return { kind: 'user', text: item.text };
+    }
+    if (item.kind === 'notice') {
+      return { kind: 'notice', text: item.text };
+    }
+    return { kind: 'error', text: item.text };
+  });
+}
+
 export function App(): React.JSX.Element {
+  const transcriptId = 'chat-transcript';
+  const composerId = 'chat-composer';
+  const composerHintId = 'chat-composer-hint';
+  const threadMetaId = 'chat-thread-meta';
   const [models, setModels] = useState<ModelOption[]>([]);
   const [model, setModel] = useState('');
+  const [mode, setMode] = useState<ChatMode>('agent');
   const [connected, setConnected] = useState(false);
   const [connectionError, setConnectionError] = useState<string | undefined>(undefined);
+  const [threadTitle, setThreadTitle] = useState('New chat');
   const [transcript, setTranscript] = useState<TranscriptItem[]>([]);
   const [busy, setBusy] = useState(false);
   const [input, setInput] = useState('');
-  const [includeContext, setIncludeContext] = useState(true);
+  const [liveRegionText, setLiveRegionText] = useState('');
   const transcriptRef = useRef<HTMLDivElement>(null);
+  const composerRef = useRef<HTMLTextAreaElement>(null);
+
+  const focusComposer = useCallback((): void => {
+    const composer = composerRef.current;
+    if (!composer) {
+      return;
+    }
+    composer.focus();
+    const end = composer.value.length;
+    composer.setSelectionRange(end, end);
+  }, []);
+
+  const focusTranscript = useCallback((): void => {
+    transcriptRef.current?.focus();
+  }, []);
 
   const handleMessage = useCallback((message: ToWebviewMessage): void => {
     switch (message.type) {
@@ -113,11 +242,18 @@ export function App(): React.JSX.Element {
       case 'modelsUpdated':
         setModels(message.models);
         setModel(message.model);
+        setMode(message.mode);
         setConnected(message.connected);
         setConnectionError(message.error);
+        setLiveRegionText(message.connected ? 'Connected to model backend.' : 'Disconnected from model backend.');
+        break;
+      case 'modeChanged':
+        setMode(message.mode);
+        setLiveRegionText(`Switched to ${message.mode} mode.`);
         break;
       case 'busy':
         setBusy(message.value);
+        setLiveRegionText(message.value ? 'Assistant is working.' : 'Assistant is ready.');
         if (!message.value) {
           setTranscript((t) =>
             t.map((item) => (item.kind === 'assistant' ? { ...item, closed: true } : item))
@@ -175,18 +311,89 @@ export function App(): React.JSX.Element {
           )
         );
         break;
+      case 'stepLimitRequest':
+        setTranscript((t) => [
+          ...t,
+          {
+            kind: 'stepLimit',
+            id: message.id,
+            stepLimit: message.stepLimit,
+            completedSteps: message.completedSteps,
+            resolved: false,
+          },
+        ]);
+        break;
+      case 'stepLimitResolved':
+        setTranscript((t) =>
+          t.map((item) =>
+            item.kind === 'stepLimit' && item.id === message.id
+              ? { ...item, resolved: true, continued: message.continued }
+              : item
+          )
+        );
+        break;
+      case 'pendingChange':
+        setTranscript((t) => {
+          const existingIndex = t.findIndex(
+            (item) => item.kind === 'pendingChange' && item.id === message.id && !item.resolved
+          );
+          if (existingIndex >= 0) {
+            const next = [...t];
+            next[existingIndex] = {
+              kind: 'pendingChange',
+              id: message.id,
+              path: message.path,
+              turnId: message.turnId,
+              resolved: false,
+            };
+            return next;
+          }
+          return [
+            ...t,
+            {
+              kind: 'pendingChange',
+              id: message.id,
+              path: message.path,
+              turnId: message.turnId,
+              resolved: false,
+            },
+          ];
+        });
+        break;
+      case 'pendingChangeResolved':
+        setTranscript((t) =>
+          t.map((item) =>
+            item.kind === 'pendingChange' && item.id === message.id
+              ? { ...item, resolved: true, accepted: message.accepted }
+              : item
+          )
+        );
+        break;
       case 'notice':
+        setLiveRegionText(message.text);
         setTranscript((t) => [...t, { kind: 'notice', text: message.text }]);
         break;
       case 'error':
+        setLiveRegionText(message.message);
         setTranscript((t) => [...t, { kind: 'error', text: message.message }]);
         break;
+      case 'threadLoaded':
+        setThreadTitle(message.title);
+        setTranscript(restoreTranscript(message.transcript));
+        setBusy(false);
+        setLiveRegionText(`Loaded conversation ${message.title}.`);
+        break;
       case 'cleared':
+        setThreadTitle('New chat');
         setTranscript([]);
         setBusy(false);
+        setLiveRegionText('Started a new conversation.');
+        break;
+      case 'focusComposer':
+        focusComposer();
         break;
     }
-  }, []);
+  }, [focusComposer]);
 
   useEffect(() => {
     const listener = (event: MessageEvent): void => handleMessage(event.data as ToWebviewMessage);
@@ -206,7 +413,8 @@ export function App(): React.JSX.Element {
     }
     setTranscript((t) => [...t, { kind: 'user', text }]);
     setInput('');
-    postToExtension({ type: 'send', text, includeContext });
+    postToExtension({ type: 'send', text });
+    window.requestAnimationFrame(() => focusComposer());
   };
 
   const onKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>): void => {
@@ -217,17 +425,44 @@ export function App(): React.JSX.Element {
   };
 
   const hasPendingApproval = transcript.some((item) => item.kind === 'approval' && !item.resolved);
+  const hasPendingStepLimit = transcript.some((item) => item.kind === 'stepLimit' && !item.resolved);
+  const hasPendingChanges = transcript.some(
+    (item) => item.kind === 'pendingChange' && !item.resolved
+  );
+  const modeTitle =
+    mode === 'ask'
+      ? 'Ask mode: read-only tools (no edits or commands).'
+      : mode === 'composer'
+        ? 'Composer mode: structured plan + multi-file apply.'
+        : 'Agent mode: full tool access.';
 
   return (
     <div className="app">
-      <div className="header">
-        <span
-          className={`status-dot ${connected ? 'connected' : 'disconnected'}`}
-          title={connected ? 'Connected' : 'Disconnected'}
-        />
+      <div className="skip-links" aria-label="Quick navigation">
+        <button className="skip-link" type="button" onClick={focusTranscript}>
+          Skip to transcript
+        </button>
+        <button className="skip-link" type="button" onClick={focusComposer}>
+          Skip to composer
+        </button>
+      </div>
+      <div className="sr-only" aria-live="polite" aria-atomic="true">
+        {liveRegionText}
+      </div>
+      <div className="header" role="region" aria-label="Chat controls">
+        <span className="connection-indicator" role="status" aria-live="polite">
+          <span
+            className={`status-dot ${connected ? 'connected' : 'disconnected'}`}
+            title={connected ? 'Connected' : 'Disconnected'}
+            aria-hidden="true"
+          />
+          <span className="sr-only">{connected ? 'Connected' : 'Disconnected'}</span>
+        </span>
         <select
+          className="model-select"
           value={model}
           disabled={!connected || models.length === 0}
+          aria-label="Model"
           onChange={(event) => {
             setModel(event.target.value);
             postToExtension({ type: 'pickModel', model: event.target.value });
@@ -243,18 +478,53 @@ export function App(): React.JSX.Element {
             ))
           )}
         </select>
+        <select
+          className="mode-select"
+          value={mode}
+          disabled={busy}
+          title={modeTitle}
+          aria-label="Chat mode"
+          onChange={(event) => {
+            const nextMode: ChatMode =
+              event.target.value === 'ask'
+                ? 'ask'
+                : event.target.value === 'composer'
+                  ? 'composer'
+                  : 'agent';
+            postToExtension({ type: 'setMode', mode: nextMode });
+          }}
+        >
+          <option value="agent">Agent</option>
+          <option value="composer">Composer</option>
+          <option value="ask">Ask</option>
+        </select>
         <button
           className="icon-button"
           title="Refresh models"
+          aria-label="Refresh models"
           onClick={() => postToExtension({ type: 'refreshModels' })}
         >
           &#x21bb;
         </button>
       </div>
 
-      {connectionError && <div className="error-banner">{connectionError}</div>}
+      {connectionError && (
+        <div className="error-banner" role="alert">
+          {connectionError}
+        </div>
+      )}
 
-      <div className="transcript" ref={transcriptRef}>
+      <div
+        id={transcriptId}
+        className="transcript"
+        ref={transcriptRef}
+        role="log"
+        aria-label="Conversation transcript"
+        aria-live="polite"
+        aria-relevant="additions text"
+        aria-busy={busy}
+        tabIndex={0}
+      >
         {transcript.length === 0 && !connectionError ? (
           <div className="empty-state">
             <div>
@@ -270,13 +540,13 @@ export function App(): React.JSX.Element {
             switch (item.kind) {
               case 'user':
                 return (
-                  <div key={index} className="message user">
+                  <div key={index} className="message user" role="article" aria-label="You">
                     {item.text}
                   </div>
                 );
               case 'assistant':
                 return (
-                  <div key={index} className="message assistant">
+                  <div key={index} className="message assistant" role="article" aria-label="Assistant">
                     <Markdown text={item.text} />
                   </div>
                 );
@@ -284,47 +554,97 @@ export function App(): React.JSX.Element {
                 return <ToolCard key={item.id + index} item={item} />;
               case 'approval':
                 return <ApprovalCard key={item.id + index} item={item} />;
+              case 'stepLimit':
+                return <StepLimitCard key={item.id + index} item={item} />;
+              case 'pendingChange':
+                return <PendingChangeCard key={item.id + index} item={item} />;
               case 'notice':
                 return (
-                  <div key={index} className="message notice">
+                  <div key={index} className="message notice" role="status">
                     {item.text}
                   </div>
                 );
               case 'error':
                 return (
-                  <div key={index} className="message error">
+                  <div key={index} className="message error" role="alert">
                     {item.text}
                   </div>
                 );
             }
           })
         )}
-        {busy && !hasPendingApproval && <div className="thinking">working...</div>}
+        {busy && !hasPendingApproval && !hasPendingStepLimit && (
+          <div className="thinking" role="status" aria-live="polite">
+            working...
+          </div>
+        )}
       </div>
 
-      <div className="composer">
+      <div className="composer" role="region" aria-label="Message composer">
         <textarea
+          id={composerId}
+          ref={composerRef}
           value={input}
-          placeholder="Ask the agent anything... (Enter to send)"
+          placeholder={
+            mode === 'ask'
+              ? 'Ask about the codebase (read-only mode)... Use @file:path, @folder:path, @symbol:query, @skill:name'
+              : mode === 'composer'
+                ? 'Describe a multi-file task... Composer will plan + apply. Use @file:path, @folder:path, @symbol:query, @skill:name'
+                : 'Ask the agent... Use @file:path, @folder:path, @symbol:query, @skill:name'
+          }
+          aria-label="Chat input"
+          aria-describedby={`${composerHintId} ${threadMetaId}`}
           onChange={(event) => setInput(event.target.value)}
           onKeyDown={onKeyDown}
         />
+        <div id={composerHintId} className="sr-only">
+          Press Enter to send. Press Shift+Enter for a new line.
+        </div>
         <div className="composer-row">
-          <label>
-            <input
-              type="checkbox"
-              checked={includeContext}
-              onChange={(event) => setIncludeContext(event.target.checked)}
-            />
-            Include active file
-          </label>
+          <span id={threadMetaId} title={threadTitle}>
+            Thread: {threadTitle}
+          </span>
+          <span>
+            {mode === 'ask'
+              ? 'Ask mode: read-only tools only.'
+              : mode === 'composer'
+                ? 'Composer mode: structured plan + multi-file apply.'
+              : 'Tip: add line ranges with @file:path:start-end and skills with @skill:name'}
+          </span>
+          {hasPendingChanges && (
+            <>
+              <button
+                className="button secondary"
+                aria-label="Accept all pending changes"
+                onClick={() => postToExtension({ type: 'acceptAllPendingChanges' })}
+              >
+                Accept all
+              </button>
+              <button
+                className="button secondary"
+                aria-label="Revert last accepted turn"
+                onClick={() => postToExtension({ type: 'revertLastTurn' })}
+              >
+                Revert last turn
+              </button>
+            </>
+          )}
           <span className="spacer" />
           {busy ? (
-            <button className="button secondary" onClick={() => postToExtension({ type: 'cancel' })}>
+            <button
+              className="button secondary"
+              aria-label="Stop current run"
+              onClick={() => postToExtension({ type: 'cancel' })}
+            >
               Stop
             </button>
           ) : (
-            <button className="button primary" disabled={!input.trim() || !connected} onClick={send}>
+            <button
+              className="button primary"
+              aria-label="Send message"
+              disabled={!input.trim() || !connected}
+              onClick={send}
+            >
               Send
             </button>
           )}

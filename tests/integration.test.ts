@@ -152,7 +152,7 @@ describe('end-to-end agent loop over real HTTP', () => {
       onNotice: vi.fn(),
     });
 
-    expect(requestApproval).toHaveBeenCalledOnce();
+    expect(requestApproval).not.toHaveBeenCalled();
     expect(await readFile(path.join(workspaceDir, 'hello.txt'), 'utf-8')).toBe('hi from agent');
     expect(streamed.join('')).toBe('File written.');
 

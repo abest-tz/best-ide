@@ -1,7 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
 import { Agent, type AgentCallbacks, type ChatClient } from '../src/core/agent';
 import type { WorkspaceHost } from '../src/core/host';
-import type { AssistantTurn, ChatRequestOptions, ToolCall } from '../src/core/types';
+import { createTools } from '../src/core/tools';
+import type { AssistantTurn, ChatMessage, ChatRequestOptions, ToolCall } from '../src/core/types';
 
 function mockHost(overrides: Partial<WorkspaceHost> = {}): WorkspaceHost {
   return {
@@ -45,6 +46,19 @@ function toolTurn(...calls: Array<[name: string, args: Record<string, unknown>]>
   return { content: '', toolCalls, finishReason: 'tool_calls' };
 }
 
+interface ParsedToolError {
+  code: string;
+  tool: string;
+  message: string;
+  retryable: boolean;
+  details?: string[];
+}
+
+function parseToolError(result: string): ParsedToolError {
+  expect(result).toMatch(/^Error:/);
+  return JSON.parse(result.slice('Error:'.length).trim()) as ParsedToolError;
+}
+
 function callbacks(overrides: Partial<AgentCallbacks> = {}): AgentCallbacks {
   return {
     onAssistantText: vi.fn(),
@@ -85,6 +99,32 @@ describe('Agent basic chat', () => {
     expect(req.tools?.map((t) => t.function.name)).toContain('read_file');
   });
 
+  it('can resume from persisted history messages', async () => {
+    const client = scriptedClient([textTurn('continued')]);
+    const persisted: ChatMessage[] = [
+      { role: 'system', content: 'Persisted system prompt' },
+      { role: 'user', content: 'Earlier question' },
+      { role: 'assistant', content: 'Earlier answer' },
+    ];
+    const agent = new Agent({
+      client,
+      host: mockHost(),
+      model: 'test-model',
+      temperature: 0,
+      initialMessages: persisted,
+    });
+
+    await agent.run('new question', callbacks());
+
+    expect(client.requests[0]?.messages.map((message) => message.role)).toEqual([
+      'system',
+      'user',
+      'assistant',
+      'user',
+    ]);
+    expect(client.requests[0]?.messages[0]?.content).toBe('Persisted system prompt');
+  });
+
   it('keeps history across runs and reset clears it back to the system prompt', async () => {
     const client = scriptedClient([textTurn('one'), textTurn('two')]);
     const agent = makeAgent(client, mockHost());
@@ -121,7 +161,42 @@ describe('Agent tool dispatch', () => {
     expect(toolMessage).toMatchObject({ tool_call_id: 'call_0', content: 'file contents' });
   });
 
-  it('requests approval for mutating tools and executes on approve', async () => {
+  it('requests approval for run_command and executes on approve', async () => {
+    const client = scriptedClient([
+      toolTurn(['run_command', { command: 'echo hi' }]),
+      textTurn('done'),
+    ]);
+    const host = mockHost();
+    const cb = callbacks();
+    const agent = makeAgent(client, host);
+
+    await agent.run('write it', cb);
+
+    expect(cb.requestApproval).toHaveBeenCalledOnce();
+    expect(host.exec).toHaveBeenCalledWith('echo hi', expect.any(Number));
+  });
+
+  it('validates run_command arguments before requesting approval', async () => {
+    const client = scriptedClient([toolTurn(['run_command', {}]), textTurn('done')]);
+    const host = mockHost();
+    const cb = callbacks();
+    const agent = makeAgent(client, host);
+
+    await agent.run('run a command', cb);
+
+    expect(cb.requestApproval).not.toHaveBeenCalled();
+    expect(host.exec).not.toHaveBeenCalled();
+    const toolMessage = client.requests[1]!.messages.find((message) => message.role === 'tool');
+    const error = parseToolError(toolMessage?.content ?? '');
+    expect(error).toMatchObject({
+      code: 'invalid_tool_arguments',
+      tool: 'run_command',
+      retryable: true,
+    });
+    expect(error.details).toContain('missing required argument "command"');
+  });
+
+  it('does not request pre-approval for write_file edits', async () => {
     const client = scriptedClient([
       toolTurn(['write_file', { path: 'out.ts', content: 'x' }]),
       textTurn('done'),
@@ -132,8 +207,35 @@ describe('Agent tool dispatch', () => {
 
     await agent.run('write it', cb);
 
-    expect(cb.requestApproval).toHaveBeenCalledOnce();
+    expect(cb.requestApproval).not.toHaveBeenCalled();
     expect(host.writeFile).toHaveBeenCalledWith('out.ts', 'x');
+  });
+
+  it('treats mutating tools as unavailable in ask mode', async () => {
+    const client = scriptedClient([
+      toolTurn(['write_file', { path: 'out.ts', content: 'x' }]),
+      textTurn('done'),
+    ]);
+    const host = mockHost();
+    const cb = callbacks();
+    const agent = new Agent({
+      client,
+      host,
+      model: 'test-model',
+      temperature: 0,
+      tools: createTools('ask'),
+    });
+
+    await agent.run('review only', cb);
+
+    expect(host.writeFile).not.toHaveBeenCalled();
+    const toolMessage = client.requests[1]!.messages.find((message) => message.role === 'tool');
+    const error = parseToolError(toolMessage?.content ?? '');
+    expect(error).toMatchObject({
+      code: 'unknown_tool',
+      tool: 'write_file',
+      retryable: true,
+    });
   });
 
   it('does not execute rejected tools and informs the model', async () => {
@@ -154,7 +256,7 @@ describe('Agent tool dispatch', () => {
 
   it('skips approval when autoApprove is enabled', async () => {
     const client = scriptedClient([
-      toolTurn(['write_file', { path: 'o', content: 'c' }]),
+      toolTurn(['run_command', { command: 'pwd' }]),
       textTurn('done'),
     ]);
     const host = mockHost();
@@ -164,7 +266,7 @@ describe('Agent tool dispatch', () => {
     await agent.run('go', cb);
 
     expect(cb.requestApproval).not.toHaveBeenCalled();
-    expect(host.writeFile).toHaveBeenCalled();
+    expect(host.exec).toHaveBeenCalledWith('pwd', expect.any(Number));
   });
 
   it('executes parallel tool calls in order', async () => {
@@ -194,7 +296,13 @@ describe('Agent tool dispatch', () => {
     await agent.run('read', callbacks());
 
     const toolMessage = client.requests[1]!.messages.find((m) => m.role === 'tool');
-    expect(toolMessage?.content).toMatch(/^Error:.*ENOENT/);
+    const error = parseToolError(toolMessage?.content ?? '');
+    expect(error).toMatchObject({
+      code: 'tool_execution_failed',
+      tool: 'read_file',
+      retryable: false,
+    });
+    expect(error.message).toMatch(/ENOENT/);
   });
 });
 
@@ -207,6 +315,42 @@ describe('Agent step cap', () => {
     await agent.run('loop forever', cb);
 
     expect(client.requests).toHaveLength(3);
+    expect(cb.onNotice).toHaveBeenCalledWith(expect.stringMatching(/step limit/i));
+  });
+
+  it('continues after maxSteps when continuation is approved', async () => {
+    const client = scriptedClient([
+      toolTurn(['read_file', { path: 'a' }]),
+      toolTurn(['read_file', { path: 'b' }]),
+      textTurn('done'),
+    ]);
+    const requestStepLimitContinuation = vi.fn().mockResolvedValue(true);
+    const cb = callbacks({ requestStepLimitContinuation });
+    const agent = makeAgent(client, mockHost(), { maxSteps: 2 });
+
+    await agent.run('keep going', cb);
+
+    expect(client.requests).toHaveLength(3);
+    expect(requestStepLimitContinuation).toHaveBeenCalledWith({
+      maxSteps: 2,
+      completedSteps: 2,
+    });
+    expect(cb.onNotice).toHaveBeenCalledWith(expect.stringMatching(/continuing after 2 model turns/i));
+  });
+
+  it('stops when continuation is rejected at the step limit', async () => {
+    const client = scriptedClient([toolTurn(['read_file', { path: 'a' }])]);
+    const requestStepLimitContinuation = vi.fn().mockResolvedValue(false);
+    const cb = callbacks({ requestStepLimitContinuation });
+    const agent = makeAgent(client, mockHost(), { maxSteps: 2 });
+
+    await agent.run('loop forever', cb);
+
+    expect(client.requests).toHaveLength(2);
+    expect(requestStepLimitContinuation).toHaveBeenCalledWith({
+      maxSteps: 2,
+      completedSteps: 2,
+    });
     expect(cb.onNotice).toHaveBeenCalledWith(expect.stringMatching(/step limit/i));
   });
 });

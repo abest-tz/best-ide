@@ -19,5 +19,11 @@ export interface WorkspaceHost {
   writeFile(path: string, content: string): Promise<void>;
   listDir(path: string): Promise<DirEntry[]>;
   grep(pattern: string, include?: string): Promise<string>;
+  semanticSearch?(query: string, include?: string, limit?: number): Promise<string>;
   exec(command: string, timeoutMs: number): Promise<ExecResult>;
+  runCommand?(command: string, timeoutMs?: number): Promise<ExecResult>;
+  getDiagnostics?(path?: string): Promise<string>;
+  getSymbols?(query?: string, path?: string): Promise<string>;
+  listMcpTools?(server?: string): Promise<string>;
+  callMcpTool?(server: string, tool: string, args: Record<string, unknown>): Promise<string>;
 }
