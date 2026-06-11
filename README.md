@@ -53,7 +53,7 @@ The extension isn't published to the marketplace yet. To build and install it lo
      (if `code` isn't on your PATH, run "Shell Command: Install 'code' command in PATH" from the VS Code command palette first)
    - **UI:** open the Extensions view, click the `...` menu in its top-right corner, choose **Install from VSIX...**, and select the file
 
-3. **Configure it:** reload VS Code, open Settings, search for `bestIde`, and set **Api Key** if your LM Studio server has authentication enabled (LM Studio > Developer > API tokens). The agent appears as a sparkle icon in the activity bar.
+3. **Configure it:** reload VS Code, open Settings, search for `bestIde`, and run **Best IDE: Set API Key** from the command palette if your LM Studio server has authentication enabled (LM Studio > Developer > API tokens). The key is stored in VS Code Secret Storage.
 
 To update after pulling new changes, re-run `npm run vsix` and install the new VSIX over the old one.
 
@@ -67,7 +67,6 @@ For hacking on the extension itself, skip the VSIX: run `./setup_and_run.sh` (or
 | Setting                              | Default                    | Description |
 | ------------------------------------ | -------------------------- | ----------- |
 | `bestIde.baseUrl`                    | `http://localhost:1234/v1` | Legacy/default OpenAI-compatible API base URL (used for the built-in `local` backend profile). |
-| `bestIde.apiKey`                     | *(empty)*                  | Legacy/default bearer token for the built-in `local` backend profile. |
 | `bestIde.backends`                   | `{}`                       | Optional named backend profiles for multi-backend routing (local + cloud fallback). |
 | `bestIde.backendPreset`              | `local`                    | Route preset when explicit routing is not set: `local`, `cost`, or `quality`. |
 | `bestIde.backendRouting`             | `{}`                       | Optional per-operation backend fallback order: `chat`, `models`, `embeddings`, `inlineCompletions`. |
@@ -87,9 +86,10 @@ For hacking on the extension itself, skip the VSIX: run `./setup_and_run.sh` (or
 | `bestIde.runCommand.timeoutMs`       | `60000`                    | Default timeout for `run_command` when the tool call omits `timeout_ms`. |
 | `bestIde.runCommand.maxTimeoutMs`    | `300000`                   | Maximum timeout policy enforced for `run_command`. |
 | `bestIde.maxSteps`                   | `25`                       | Max model turns per run before prompting to continue or stop. |
-| `bestIde.telemetry.enabled`          | `false`                    | Opt-in aggregate telemetry for tool success rates, latency, and acceptance/approval quality signals. |
 | `bestIde.inlineCompletions.enabled`  | `false`                    | Enable Tab/ghost-text inline code completion. |
 | `bestIde.inlineCompletions.model`    | *(empty)*                  | Legacy/default dedicated inline completion model id for the built-in `local` backend profile. |
+
+Use `Best IDE: Set API Key` and `Best IDE: Clear API Key` from the command palette to manage the default API token in VS Code Secret Storage.
 
 
 ## Privacy and offline story
@@ -98,8 +98,6 @@ For hacking on the extension itself, skip the VSIX: run `./setup_and_run.sh` (or
 - Extension data stays on your machine: conversation threads are saved in local VS Code extension state, and agent file edits happen in your workspace.
 - Nothing is sent to Best IDE-managed cloud services because this project does not run one. Network traffic goes only to the model/MCP endpoints you configure.
 - If you add non-local backends (for fallback, cost, or quality routing), requests for those operations are sent to those configured providers by design.
-- Telemetry is opt-in (`bestIde.telemetry.enabled`, default `false`) and aggregates counters only (tool success/failure + latency, model-turn latency, approval/acceptance rates). It does **not** include prompts, file contents, or command output.
-- You can inspect telemetry from the command palette with `Best IDE: Show Telemetry Summary` and clear it with `Best IDE: Reset Telemetry Summary`.
 
 ## Rules and skills
 

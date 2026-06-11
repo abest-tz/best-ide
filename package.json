@@ -22,14 +22,14 @@
         "title": "Best IDE: Export Current Conversation"
       },
       {
-        "command": "bestIde.showTelemetrySummary",
-        "icon": "$(pulse)",
-        "title": "Best IDE: Show Telemetry Summary"
+        "command": "bestIde.setApiKey",
+        "icon": "$(key)",
+        "title": "Best IDE: Set API Key"
       },
       {
-        "command": "bestIde.resetTelemetry",
+        "command": "bestIde.clearApiKey",
         "icon": "$(trash)",
-        "title": "Best IDE: Reset Telemetry Summary"
+        "title": "Best IDE: Clear API Key"
       },
       {
         "command": "bestIde.pickModel",
@@ -68,11 +68,6 @@
     ],
     "configuration": {
       "properties": {
-        "bestIde.apiKey": {
-          "default": "",
-          "description": "API token sent as a Bearer Authorization header. Required if your LM Studio server has authentication enabled.",
-          "type": "string"
-        },
         "bestIde.autoApprove": {
           "default": false,
           "description": "Automatically approve pre-execution mutating tools (currently run_command) without asking. Use with care.",
@@ -132,11 +127,6 @@
           "default": 25,
           "description": "Maximum number of agent loop steps (model turns) per request.",
           "type": "number"
-        },
-        "bestIde.telemetry.enabled": {
-          "default": false,
-          "markdownDescription": "Opt-in aggregated telemetry for Best IDE (tool success rates, latency, and acceptance/approval quality signals). No prompts, file contents, or command output are collected.",
-          "type": "boolean"
         },
         "bestIde.runCommand.allowlist": {
           "default": [],
@@ -347,10 +337,10 @@
   "main": "./dist/extension.js",
   "name": "best-ide-agent",
   "private": true,
-  "publisher": "best-ide",
+  "publisher": "BestIDE",
   "repository": {
     "type": "git",
-    "url": "https://github.com/your-username/best-ide-agent.git"
+    "url": "https://github.com/abest-tz/best-ide.git"
   },
   "scripts": {
     "build": "node esbuild.mjs",

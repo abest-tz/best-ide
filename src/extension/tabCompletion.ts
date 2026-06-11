@@ -27,10 +27,9 @@ interface CachedDiscoveredModel {
   expiresAtMs: number;
 }
 
-function readInlineCompletionConfig(): InlineCompletionConfig {
+function readInlineCompletionConfig(apiKey: string): InlineCompletionConfig {
   const config = vscode.workspace.getConfiguration('bestIde');
   const baseUrl = config.get<string>('baseUrl', 'http://localhost:1234/v1');
-  const apiKey = config.get<string>('apiKey', '');
   const fallbackModel = config.get<string>('model', '').trim();
   const embeddingModel = config.get<string>('embeddingModel', '').trim();
   const inlineCompletionsModel = config.get<string>('inlineCompletions.model', '').trim();
@@ -54,13 +53,15 @@ function readInlineCompletionConfig(): InlineCompletionConfig {
 export class InlineCompletionProvider implements vscode.InlineCompletionItemProvider {
   private readonly discoveredModelCache = new Map<string, CachedDiscoveredModel>();
 
+  constructor(private readonly getApiKey: () => Promise<string>) {}
+
   async provideInlineCompletionItems(
     document: vscode.TextDocument,
     position: vscode.Position,
     context: vscode.InlineCompletionContext,
     token: vscode.CancellationToken
   ): Promise<vscode.InlineCompletionItem[] | vscode.InlineCompletionList> {
-    const config = readInlineCompletionConfig();
+    const config = readInlineCompletionConfig(await this.getApiKey());
     if (!config.enabled) {
       return [];
     }

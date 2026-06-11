@@ -1,12 +1,22 @@
 import * as vscode from 'vscode';
+import { ApiKeyManager } from './apiKeyManager';
 import { ChatViewProvider } from './panel';
 import { InlineCompletionProvider } from './tabCompletion';
 
 export function activate(context: vscode.ExtensionContext): void {
-  const provider = new ChatViewProvider(context, context.extensionUri);
-  const inlineCompletionProvider = new InlineCompletionProvider();
+  const apiKeyManager = new ApiKeyManager(context);
+  void apiKeyManager.initialize();
+
+  const provider = new ChatViewProvider(context, context.extensionUri, () => apiKeyManager.getApiKey());
+  const inlineCompletionProvider = new InlineCompletionProvider(() => apiKeyManager.getApiKey());
 
   context.subscriptions.push(
+    apiKeyManager,
+    vscode.workspace.onDidChangeConfiguration((event) => {
+      if (event.affectsConfiguration('bestIde.apiKey')) {
+        void apiKeyManager.migrateLegacySetting();
+      }
+    }),
     vscode.window.registerWebviewViewProvider(ChatViewProvider.viewType, provider, {
       webviewOptions: { retainContextWhenHidden: true },
     }),
@@ -18,8 +28,25 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand('bestIde.newChat', () => provider.newChat()),
     vscode.commands.registerCommand('bestIde.searchThreads', () => provider.searchThreads()),
     vscode.commands.registerCommand('bestIde.exportThread', () => provider.exportActiveThread()),
-    vscode.commands.registerCommand('bestIde.showTelemetrySummary', () => provider.showTelemetrySummary()),
-    vscode.commands.registerCommand('bestIde.resetTelemetry', () => provider.resetTelemetry()),
+    vscode.commands.registerCommand('bestIde.setApiKey', async () => {
+      const value = await vscode.window.showInputBox({
+        prompt: 'Enter API key for the default Best IDE backend',
+        password: true,
+        ignoreFocusOut: true,
+      });
+      if (value === undefined) {
+        return;
+      }
+      const trimmed = value.trim();
+      await apiKeyManager.setApiKey(trimmed);
+      void vscode.window.showInformationMessage(
+        trimmed === '' ? 'Best IDE API key cleared.' : 'Best IDE API key saved to Secret Storage.'
+      );
+    }),
+    vscode.commands.registerCommand('bestIde.clearApiKey', async () => {
+      await apiKeyManager.clearApiKey();
+      void vscode.window.showInformationMessage('Best IDE API key cleared from Secret Storage.');
+    }),
     vscode.commands.registerCommand('bestIde.pickModel', () => provider.pickModelViaQuickPick()),
     vscode.commands.registerCommand('bestIde.focusChat', () => provider.focusChatComposer()),
     vscode.commands.registerTextEditorCommand('bestIde.inlineEdit', (editor) =>

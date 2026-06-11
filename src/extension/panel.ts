@@ -39,11 +39,6 @@ import {
   normalizeRunCommandSandboxSettings,
 } from './runCommandSandbox';
 import { resolveSkillFile } from './skills';
-import {
-  formatTelemetrySummary,
-  TelemetryRecorder,
-  type RunOutcome,
-} from './telemetry';
 
 interface Config {
   model: string;
@@ -61,7 +56,6 @@ interface Config {
   temperature: number;
   autoApprove: boolean;
   maxSteps: number;
-  telemetryEnabled: boolean;
 }
 
 function parseChatMode(value: string | undefined): ChatMode {
@@ -84,10 +78,9 @@ function parseStringListSetting(value: unknown): string[] {
     .filter((entry) => entry !== '');
 }
 
-function readConfig(): Config {
+function readConfig(apiKey: string): Config {
   const config = vscode.workspace.getConfiguration('bestIde');
   const baseUrl = config.get<string>('baseUrl', 'http://localhost:1234/v1');
-  const apiKey = config.get<string>('apiKey', '');
   const model = config.get<string>('model', '');
   const embeddingModel = config.get<string>('embeddingModel', '');
   const inlineCompletionsModel = config.get<string>('inlineCompletions.model', '');
@@ -127,7 +120,6 @@ function readConfig(): Config {
     temperature: config.get<number>('temperature', 0.2),
     autoApprove: config.get<boolean>('autoApprove', false),
     maxSteps: config.get<number>('maxSteps', 25),
-    telemetryEnabled: config.get<boolean>('telemetry.enabled', false),
   };
 }
 
@@ -202,24 +194,24 @@ export class ChatViewProvider
   private readonly threadStore: ConversationThreadStore;
   private readonly pendingApprovals = new Map<string, (approved: boolean) => void>();
   private readonly pendingStepLimitRequests = new Map<string, (continueRun: boolean) => void>();
-  private readonly pendingToolTelemetry = new Map<string, { name: string; startedAtMs: number }>();
   private readonly pendingChanges = new Map<string, PendingChange>();
   private readonly checkpointsByTurn = new Map<number, Map<string, CheckpointEntry>>();
   private readonly checkpointOrder: number[] = [];
   private readonly pendingContentEmitter = new vscode.EventEmitter<vscode.Uri>();
-  private readonly telemetry: TelemetryRecorder;
   readonly onDidChange = this.pendingContentEmitter.event;
 
   constructor(
     context: vscode.ExtensionContext,
-    private readonly extensionUri: vscode.Uri
+    private readonly extensionUri: vscode.Uri,
+    private readonly getApiKey: () => Promise<string>
   ) {
     this.threadStore = new ConversationThreadStore(context.workspaceState);
     this.activeThreadId = this.threadStore.getActiveThread().id;
-    this.telemetry = new TelemetryRecorder(context.globalState, {
-      enabled: readConfig().telemetryEnabled,
-    });
     this.updateCommandContexts();
+  }
+
+  private async readConfig(): Promise<Config> {
+    return readConfig(await this.getApiKey());
   }
 
   provideTextDocumentContent(uri: vscode.Uri): string {
@@ -329,26 +321,6 @@ export class ChatViewProvider
     void vscode.window.showInformationMessage(`Exported conversation to ${destination.fsPath}`);
   }
 
-  public async showTelemetrySummary(): Promise<void> {
-    const config = readConfig();
-    this.telemetry.setEnabled(config.telemetryEnabled);
-    const document = await vscode.workspace.openTextDocument({
-      language: 'markdown',
-      content: formatTelemetrySummary(this.telemetry.getSummary()),
-    });
-    await vscode.window.showTextDocument(document, { preview: false });
-    if (!config.telemetryEnabled) {
-      void vscode.window.showInformationMessage(
-        'Telemetry collection is disabled. Enable bestIde.telemetry.enabled to collect new metrics.'
-      );
-    }
-  }
-
-  public async resetTelemetry(): Promise<void> {
-    await this.telemetry.reset();
-    void vscode.window.showInformationMessage('Best IDE telemetry metrics have been reset.');
-  }
-
   public async runInlineEdit(editor?: vscode.TextEditor): Promise<void> {
     if (this.abortController) {
       void vscode.window.showInformationMessage('Stop the current run before starting an inline edit.');
@@ -389,7 +361,7 @@ export class ChatViewProvider
       return;
     }
 
-    const config = readConfig();
+    const config = await this.readConfig();
     if (config.chatMode === 'ask') {
       void vscode.window.showInformationMessage(
         'Inline edit is unavailable in Ask mode. Switch to Agent mode to edit files.'
@@ -518,7 +490,7 @@ export class ChatViewProvider
   }
 
   async pickModelViaQuickPick(): Promise<void> {
-    const config = readConfig();
+    const config = await this.readConfig();
     try {
       const { models, backend } = await this.listModelsFromBackends(config);
       const picked = await vscode.window.showQuickPick(
@@ -611,7 +583,6 @@ export class ChatViewProvider
   private cancel(): void {
     this.abortController?.abort();
     this.abortController = undefined;
-    this.pendingToolTelemetry.clear();
     for (const [id, resolve] of this.pendingApprovals) {
       resolve(false);
       this.post({ type: 'approvalResolved', id, approved: false });
@@ -644,7 +615,7 @@ export class ChatViewProvider
       return;
     }
     const normalized = parseChatMode(mode);
-    const config = readConfig();
+    const config = await this.readConfig();
     if (config.chatMode !== normalized) {
       await vscode.workspace
         .getConfiguration('bestIde')
@@ -697,7 +668,6 @@ export class ChatViewProvider
     const chatBackends = getBackendsForOperation(config.backendRouting, 'chat');
     const primaryBackendId = chatBackends[0]?.id;
     let fallbackNoticeShown = false;
-    this.telemetry.setEnabled(config.telemetryEnabled);
     return {
       chat: async (options, onText) => {
         const failures: string[] = [];
@@ -713,7 +683,6 @@ export class ChatViewProvider
           const client = new OpenAIClient({ baseUrl: backend.baseUrl, apiKey: backend.apiKey });
           for (const model of modelCandidates) {
             let streamed = false;
-            const startedAtMs = Date.now();
             try {
               const turn = await client.chat(
                 {
@@ -725,12 +694,6 @@ export class ChatViewProvider
                   onText(delta);
                 }
               );
-              this.telemetry.recordModelTurn({
-                backendId: backend.id,
-                model,
-                success: true,
-                latencyMs: Date.now() - startedAtMs,
-              });
               if (backend.id !== primaryBackendId && !fallbackNoticeShown) {
                 fallbackNoticeShown = true;
                 this.post({
@@ -740,12 +703,6 @@ export class ChatViewProvider
               }
               return turn;
             } catch (error) {
-              this.telemetry.recordModelTurn({
-                backendId: backend.id,
-                model,
-                success: false,
-                latencyMs: Date.now() - startedAtMs,
-              });
               if (streamed) {
                 throw new Error(
                   `Backend "${backend.id}" failed after streaming began: ${this.formatBackendError(error)}`
@@ -765,7 +722,7 @@ export class ChatViewProvider
   }
 
   private async sendModels(kind: 'init' | 'modelsUpdated'): Promise<void> {
-    const config = readConfig();
+    const config = await this.readConfig();
     try {
       const { models, backend, failures } = await this.listModelsFromBackends(config);
       const preferredModel = resolveChatModel(
@@ -1003,8 +960,7 @@ export class ChatViewProvider
       }
     }
 
-    const config = readConfig();
-    this.telemetry.setEnabled(config.telemetryEnabled);
+    const config = await this.readConfig();
     const configFingerprint = JSON.stringify(config);
     const activeThread = this.threadStore.getActiveThread();
     if (
@@ -1043,9 +999,7 @@ export class ChatViewProvider
     this.activeTurnId = turnId;
     const requestAbort = new AbortController();
     this.abortController = requestAbort;
-    this.pendingToolTelemetry.clear();
     this.post({ type: 'busy', value: true });
-    let runOutcome: RunOutcome | undefined;
 
     try {
       const runPrompt =
@@ -1056,38 +1010,21 @@ export class ChatViewProvider
         runPrompt,
         {
           onAssistantText: (delta) => this.post({ type: 'assistantDelta', text: delta }),
-          onToolCall: (call, mutating) => {
-            this.pendingToolTelemetry.set(call.id, {
-              name: call.function.name,
-              startedAtMs: Date.now(),
-            });
+          onToolCall: (call, mutating) =>
             this.post({
               type: 'toolCall',
               id: call.id,
               name: call.function.name,
               args: call.function.arguments,
               mutating,
-            });
-          },
-          onToolResult: (callId, result) => {
-            const pendingTelemetry = this.pendingToolTelemetry.get(callId);
-            if (pendingTelemetry) {
-              this.pendingToolTelemetry.delete(callId);
-              this.telemetry.recordToolCall({
-                name: pendingTelemetry.name,
-                success: !result.startsWith('Error:'),
-                latencyMs: Date.now() - pendingTelemetry.startedAtMs,
-              });
-            }
-            this.post({ type: 'toolResult', id: callId, result });
-          },
+            }),
+          onToolResult: (callId, result) => this.post({ type: 'toolResult', id: callId, result }),
           requestApproval: (call) => this.requestApproval(call),
           onNotice: (notice) => this.post({ type: 'notice', text: notice }),
           requestStepLimitContinuation: (context) => this.requestStepLimitContinuation(context),
         },
         requestAbort.signal
       );
-      runOutcome = 'completed';
       const assistantTexts = this.extractAssistantTexts(this.agent.messages.slice(historyLengthBeforeRun));
       const updatedThread = await this.threadStore.recordTurn(this.activeThreadId, {
         userText: text,
@@ -1100,10 +1037,8 @@ export class ChatViewProvider
       }
     } catch (error) {
       if (requestAbort.signal.aborted) {
-        runOutcome = 'cancelled';
         this.post({ type: 'notice', text: 'Cancelled.' });
       } else {
-        runOutcome = 'failed';
         const errorMessage = error instanceof Error ? error.message : String(error);
         this.post({
           type: 'error',
@@ -1120,11 +1055,6 @@ export class ChatViewProvider
         }
       }
     } finally {
-      if (!runOutcome) {
-        runOutcome = requestAbort.signal.aborted ? 'cancelled' : 'failed';
-      }
-      this.telemetry.recordRunOutcome(runOutcome);
-      this.pendingToolTelemetry.clear();
       this.activeTurnId = undefined;
       if (this.abortController === requestAbort) {
         this.abortController = undefined;
@@ -1163,7 +1093,6 @@ export class ChatViewProvider
 
     return new Promise<boolean>((resolve) => {
       this.pendingApprovals.set(call.id, (approved) => {
-        this.telemetry.recordCommandApproval(approved);
         this.post({ type: 'approvalResolved', id: call.id, approved });
         resolve(approved);
       });
@@ -1390,7 +1319,6 @@ export class ChatViewProvider
 
   private resolvePendingChangeEntry(pending: PendingChange, accepted: boolean): void {
     this.pendingChanges.delete(pending.id);
-    this.telemetry.recordPendingChangeDecision(accepted);
     this.pendingContentEmitter.fire(this.pendingUri(pending.path, 'base'));
     this.pendingContentEmitter.fire(this.pendingUri(pending.path, 'proposed'));
     this.updateCommandContexts();
