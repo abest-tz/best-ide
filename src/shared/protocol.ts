@@ -11,9 +11,24 @@ export interface PersistedTranscriptItem {
   text: string;
 }
 
+export type MentionSuggestionKind = 'kind' | 'file' | 'folder' | 'symbol' | 'skill';
+
+export interface MentionSuggestionItem {
+  kind: MentionSuggestionKind;
+  label: string;
+  insertText: string;
+  detail?: string;
+}
+
 export type ToExtensionMessage =
   | { type: 'ready' }
   | { type: 'send'; text: string }
+  | {
+      type: 'mentionSuggestionsRequest';
+      requestId: string;
+      text: string;
+      cursor: number;
+    }
   | { type: 'approvalResponse'; id: string; approved: boolean }
   | { type: 'stepLimitResponse'; id: string; continueRun: boolean }
   | { type: 'pendingChangeDecision'; id: string; accepted: boolean }
@@ -47,6 +62,16 @@ export type ToWebviewMessage =
   | { type: 'assistantDelta'; text: string }
   | { type: 'toolCall'; id: string; name: string; args: string; mutating: boolean }
   | { type: 'toolResult'; id: string; result: string }
+  | {
+      type: 'mentionSuggestionsResult';
+      requestId: string;
+      active: boolean;
+      rangeStart: number;
+      rangeEnd: number;
+      kind?: Exclude<MentionSuggestionKind, 'kind'>;
+      query?: string;
+      items: MentionSuggestionItem[];
+    }
   | {
       type: 'approvalRequest';
       id: string;

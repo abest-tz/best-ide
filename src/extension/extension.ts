@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import { ApiKeyManager } from './apiKeyManager';
+import { MentionCompletionProvider } from './mentionCompletionProvider';
 import { ChatViewProvider } from './panel';
 import { InlineCompletionProvider } from './tabCompletion';
 
@@ -9,6 +10,7 @@ export function activate(context: vscode.ExtensionContext): void {
 
   const provider = new ChatViewProvider(context, context.extensionUri, () => apiKeyManager.getApiKey());
   const inlineCompletionProvider = new InlineCompletionProvider(() => apiKeyManager.getApiKey());
+  const mentionCompletionProvider = new MentionCompletionProvider();
 
   context.subscriptions.push(
     apiKeyManager,
@@ -24,6 +26,13 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.languages.registerInlineCompletionItemProvider(
       { scheme: 'file' },
       inlineCompletionProvider
+    ),
+    vscode.languages.registerCompletionItemProvider(
+      { scheme: 'file' },
+      mentionCompletionProvider,
+      '@',
+      ':',
+      '/'
     ),
     vscode.commands.registerCommand('bestIde.newChat', () => provider.newChat()),
     vscode.commands.registerCommand('bestIde.searchThreads', () => provider.searchThreads()),

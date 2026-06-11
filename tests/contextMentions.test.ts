@@ -49,6 +49,32 @@ describe('parseContextMentions', () => {
     ]);
   });
 
+  it('parses autocomplete-friendly file and folder paths', () => {
+    const parsed = parseContextMentions(
+      'Inspect @file:src/extension/ and @folder:src/extension/ with @skill:review'
+    );
+
+    expect(parsed.malformedMentions).toEqual([]);
+    expect(parsed.promptWithoutMentions).toBe('Inspect and with');
+    expect(parsed.mentions).toEqual([
+      {
+        kind: 'file',
+        raw: '@file:src/extension/',
+        path: 'src/extension/',
+      },
+      {
+        kind: 'folder',
+        raw: '@folder:src/extension/',
+        path: 'src/extension/',
+      },
+      {
+        kind: 'skill',
+        raw: '@skill:review',
+        name: 'review',
+      },
+    ]);
+  });
+
   it('reports malformed mentions', () => {
     const parsed = parseContextMentions('Check @file:src/a.ts:30-10 and @folder: @skill: then continue');
 

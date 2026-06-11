@@ -2,6 +2,7 @@ import { marked } from 'marked';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type {
   ChatMode,
+  MentionSuggestionItem,
   ModelOption,
   PersistedTranscriptItem,
   ToWebviewMessage,
@@ -40,6 +41,24 @@ type TranscriptItem =
     }
   | { kind: 'notice'; text: string }
   | { kind: 'error'; text: string };
+
+interface MentionSuggestionState {
+  active: boolean;
+  requestId: string;
+  rangeStart: number;
+  rangeEnd: number;
+  items: MentionSuggestionItem[];
+  selectedIndex: number;
+}
+
+const EMPTY_MENTION_SUGGESTIONS: MentionSuggestionState = {
+  active: false,
+  requestId: '',
+  rangeStart: 0,
+  rangeEnd: 0,
+  items: [],
+  selectedIndex: 0,
+};
 
 marked.setOptions({ gfm: true, breaks: true });
 
@@ -218,9 +237,15 @@ export function App(): React.JSX.Element {
   const [transcript, setTranscript] = useState<TranscriptItem[]>([]);
   const [busy, setBusy] = useState(false);
   const [input, setInput] = useState('');
+  const [cursorOffset, setCursorOffset] = useState(0);
+  const [mentionSuggestions, setMentionSuggestions] =
+    useState<MentionSuggestionState>(EMPTY_MENTION_SUGGESTIONS);
   const [liveRegionText, setLiveRegionText] = useState('');
   const transcriptRef = useRef<HTMLDivElement>(null);
   const composerRef = useRef<HTMLTextAreaElement>(null);
+  const mentionRequestCounterRef = useRef(0);
+  const latestMentionRequestIdRef = useRef('');
+  const mentionDebounceTimerRef = useRef<number | undefined>(undefined);
 
   const focusComposer = useCallback((): void => {
     const composer = composerRef.current;
@@ -235,6 +260,48 @@ export function App(): React.JSX.Element {
   const focusTranscript = useCallback((): void => {
     transcriptRef.current?.focus();
   }, []);
+
+  const dismissMentionSuggestions = useCallback((): void => {
+    setMentionSuggestions(EMPTY_MENTION_SUGGESTIONS);
+  }, []);
+
+  const updateCursorFromComposer = useCallback((): void => {
+    const composer = composerRef.current;
+    if (!composer) {
+      return;
+    }
+    setCursorOffset(composer.selectionStart ?? composer.value.length);
+  }, []);
+
+  const acceptMentionSuggestion = useCallback(
+    (index: number): void => {
+      if (!mentionSuggestions.active || mentionSuggestions.items.length === 0) {
+        return;
+      }
+      const suggestion = mentionSuggestions.items[index];
+      if (!suggestion) {
+        return;
+      }
+
+      const start = Math.max(0, Math.min(mentionSuggestions.rangeStart, input.length));
+      const end = Math.max(start, Math.min(mentionSuggestions.rangeEnd, input.length));
+      const nextInput = `${input.slice(0, start)}${suggestion.insertText}${input.slice(end)}`;
+      const nextCursor = start + suggestion.insertText.length;
+
+      setInput(nextInput);
+      setCursorOffset(nextCursor);
+      setMentionSuggestions(EMPTY_MENTION_SUGGESTIONS);
+      window.requestAnimationFrame(() => {
+        const composer = composerRef.current;
+        if (!composer) {
+          return;
+        }
+        composer.focus();
+        composer.setSelectionRange(nextCursor, nextCursor);
+      });
+    },
+    [input, mentionSuggestions]
+  );
 
   const handleMessage = useCallback((message: ToWebviewMessage): void => {
     switch (message.type) {
@@ -287,6 +354,23 @@ export function App(): React.JSX.Element {
             item.kind === 'tool' && item.id === message.id ? { ...item, result: message.result } : item
           )
         );
+        break;
+      case 'mentionSuggestionsResult':
+        if (message.requestId !== latestMentionRequestIdRef.current) {
+          break;
+        }
+        if (!message.active || message.items.length === 0) {
+          setMentionSuggestions(EMPTY_MENTION_SUGGESTIONS);
+          break;
+        }
+        setMentionSuggestions({
+          active: true,
+          requestId: message.requestId,
+          rangeStart: message.rangeStart,
+          rangeEnd: message.rangeEnd,
+          items: message.items,
+          selectedIndex: 0,
+        });
         break;
       case 'approvalRequest':
         setTranscript((t) => [
@@ -406,24 +490,87 @@ export function App(): React.JSX.Element {
     transcriptRef.current?.scrollTo({ top: transcriptRef.current.scrollHeight });
   }, [transcript]);
 
+  useEffect(() => {
+    if (mentionDebounceTimerRef.current !== undefined) {
+      window.clearTimeout(mentionDebounceTimerRef.current);
+    }
+    const requestId = `mention-${++mentionRequestCounterRef.current}`;
+    latestMentionRequestIdRef.current = requestId;
+    mentionDebounceTimerRef.current = window.setTimeout(() => {
+      postToExtension({
+        type: 'mentionSuggestionsRequest',
+        requestId,
+        text: input,
+        cursor: cursorOffset,
+      });
+    }, 150);
+    return () => {
+      if (mentionDebounceTimerRef.current !== undefined) {
+        window.clearTimeout(mentionDebounceTimerRef.current);
+        mentionDebounceTimerRef.current = undefined;
+      }
+    };
+  }, [cursorOffset, input]);
+
   const send = (): void => {
     const text = input.trim();
-    if (!text || busy) {
+    if (!text || busy || mentionMenuOpen) {
       return;
     }
     setTranscript((t) => [...t, { kind: 'user', text }]);
     setInput('');
+    setCursorOffset(0);
+    dismissMentionSuggestions();
     postToExtension({ type: 'send', text });
     window.requestAnimationFrame(() => focusComposer());
   };
 
   const onKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>): void => {
+    if (mentionMenuOpen) {
+      if (event.key === 'ArrowDown') {
+        event.preventDefault();
+        setMentionSuggestions((state) => {
+          if (!state.active || state.items.length === 0) {
+            return state;
+          }
+          return {
+            ...state,
+            selectedIndex: (state.selectedIndex + 1) % state.items.length,
+          };
+        });
+        return;
+      }
+      if (event.key === 'ArrowUp') {
+        event.preventDefault();
+        setMentionSuggestions((state) => {
+          if (!state.active || state.items.length === 0) {
+            return state;
+          }
+          return {
+            ...state,
+            selectedIndex: (state.selectedIndex - 1 + state.items.length) % state.items.length,
+          };
+        });
+        return;
+      }
+      if (event.key === 'Enter' || event.key === 'Tab') {
+        event.preventDefault();
+        acceptMentionSuggestion(mentionSuggestions.selectedIndex);
+        return;
+      }
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        dismissMentionSuggestions();
+        return;
+      }
+    }
     if (event.key === 'Enter' && !event.shiftKey) {
       event.preventDefault();
       send();
     }
   };
 
+  const mentionMenuOpen = mentionSuggestions.active && mentionSuggestions.items.length > 0;
   const hasPendingApproval = transcript.some((item) => item.kind === 'approval' && !item.resolved);
   const hasPendingStepLimit = transcript.some((item) => item.kind === 'stepLimit' && !item.resolved);
   const hasPendingChanges = transcript.some(
@@ -594,9 +741,33 @@ export function App(): React.JSX.Element {
           }
           aria-label="Chat input"
           aria-describedby={`${composerHintId} ${threadMetaId}`}
-          onChange={(event) => setInput(event.target.value)}
+          onChange={(event) => {
+            setInput(event.target.value);
+            setCursorOffset(event.target.selectionStart ?? event.target.value.length);
+          }}
+          onSelect={updateCursorFromComposer}
+          onClick={updateCursorFromComposer}
+          onKeyUp={updateCursorFromComposer}
           onKeyDown={onKeyDown}
         />
+        {mentionMenuOpen && (
+          <div className="mention-suggestions" role="listbox" aria-label="Mention suggestions">
+            {mentionSuggestions.items.map((item, index) => (
+              <button
+                key={`${item.kind}:${item.insertText}:${index}`}
+                type="button"
+                className={`mention-suggestion-item ${index === mentionSuggestions.selectedIndex ? 'active' : ''}`}
+                role="option"
+                aria-selected={index === mentionSuggestions.selectedIndex}
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={() => acceptMentionSuggestion(index)}
+              >
+                <span className="mention-suggestion-label">{item.label}</span>
+                {item.detail && <span className="mention-suggestion-detail">{item.detail}</span>}
+              </button>
+            ))}
+          </div>
+        )}
         <div id={composerHintId} className="sr-only">
           Press Enter to send. Press Shift+Enter for a new line.
         </div>
@@ -642,7 +813,7 @@ export function App(): React.JSX.Element {
             <button
               className="button primary"
               aria-label="Send message"
-              disabled={!input.trim() || !connected}
+              disabled={!input.trim() || !connected || mentionMenuOpen}
               onClick={send}
             >
               Send

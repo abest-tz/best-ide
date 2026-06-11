@@ -7,6 +7,7 @@ import {
   trimSuffixOverlap,
   trimTypedPrefixOverlap,
 } from '../src/extension/inlineCompletion';
+import { detectActiveMentionQuery } from '../src/extension/mentionSuggestions';
 
 describe('buildInlineCompletionMessages', () => {
   it('builds a completion prompt with file and cursor context', () => {
@@ -75,5 +76,23 @@ describe('finalizeInlineCompletion', () => {
   it('clips excessively long completions', () => {
     const text = finalizeInlineCompletion('x'.repeat(700), '', '');
     expect(text.length).toBe(600);
+  });
+});
+
+describe('mention coexistence guard', () => {
+  it('detects active @ mention tokens', () => {
+    const line = 'const prompt = @file:src/ext';
+    const cursor = line.indexOf('@file:src/ext') + '@file:src/ext'.length;
+    expect(detectActiveMentionQuery(line, cursor)).toEqual({
+      rangeStart: line.indexOf('@file:src/ext'),
+      rangeEnd: cursor,
+      kind: 'file',
+      query: 'src/ext',
+      kindQuery: '',
+    });
+  });
+
+  it('returns undefined when cursor is not inside a mention token', () => {
+    expect(detectActiveMentionQuery('const value = 1', 'const'.length)).toBeUndefined();
   });
 });

@@ -214,6 +214,47 @@ body {
   font-size: inherit;
 }
 .composer textarea:focus { outline: 1px solid var(--vscode-focusBorder); }
+.mention-suggestions {
+  border: 1px solid var(--vscode-panel-border);
+  border-radius: 4px;
+  background: var(--vscode-editorWidget-background);
+  max-height: 220px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+.mention-suggestion-item {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  border: none;
+  border-top: 1px solid var(--vscode-panel-border);
+  background: transparent;
+  color: inherit;
+  font-family: inherit;
+  font-size: 0.95em;
+  text-align: left;
+  padding: 6px 8px;
+  cursor: pointer;
+}
+.mention-suggestion-item:first-child {
+  border-top: none;
+}
+.mention-suggestion-item:hover,
+.mention-suggestion-item.active {
+  background: var(--vscode-list-hoverBackground);
+}
+.mention-suggestion-label {
+  font-family: var(--vscode-editor-font-family);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mention-suggestion-detail {
+  color: var(--vscode-descriptionForeground);
+  white-space: nowrap;
+}
 .composer-row { display: flex; align-items: center; gap: 8px; }
 .composer-row label {
   display: flex;
@@ -256,6 +297,7 @@ body {
 .icon-button:focus-visible,
 .button:focus-visible,
 .composer textarea:focus-visible,
+.mention-suggestion-item:focus-visible,
 .transcript:focus-visible,
 .tool-card summary:focus-visible,
 .skip-link:focus-visible {
@@ -272,6 +314,8 @@ body {
   .tool-card,
   .approval-card,
   .error-banner,
+  .mention-suggestions,
+  .mention-suggestion-item,
   .header select,
   .button,
   .icon-button,

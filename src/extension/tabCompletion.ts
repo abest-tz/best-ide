@@ -12,6 +12,7 @@ import {
   type BackendProfile,
   type BackendRoutingState,
 } from './backendRouting';
+import { detectActiveMentionQuery } from './mentionSuggestions';
 
 const INLINE_COMPLETION_TEMPERATURE = 0.1;
 const DISCOVERED_MODEL_TTL_MS = 30_000;
@@ -73,6 +74,9 @@ export class InlineCompletionProvider implements vscode.InlineCompletionItemProv
     }
 
     const linePrefix = document.lineAt(position.line).text.slice(0, position.character);
+    if (detectActiveMentionQuery(linePrefix, linePrefix.length)) {
+      return [];
+    }
     if (context.triggerKind === vscode.InlineCompletionTriggerKind.Automatic && linePrefix.trim() === '') {
       return [];
     }

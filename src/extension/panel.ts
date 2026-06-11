@@ -25,6 +25,8 @@ import {
   type ContextMention,
   type ContextSkillMention,
 } from './contextMentions';
+import { createMentionSuggestionSource } from './mentionSuggestionSource';
+import { resolveMentionSuggestions } from './mentionSuggestions';
 import { ConversationThreadStore, type StoredThread } from './conversationThreads';
 import { VsCodeWorkspaceHost, type StagedWrite } from './host';
 import {
@@ -535,6 +537,9 @@ export class ChatViewProvider
       case 'send':
         await this.handleSend(message.text);
         break;
+      case 'mentionSuggestionsRequest':
+        await this.handleMentionSuggestionsRequest(message);
+        break;
       case 'approvalResponse': {
         const resolve = this.pendingApprovals.get(message.id);
         if (resolve) {
@@ -577,6 +582,45 @@ export class ChatViewProvider
       case 'cancel':
         this.cancel();
         break;
+    }
+  }
+
+  private async handleMentionSuggestionsRequest(
+    message: Extract<ToExtensionMessage, { type: 'mentionSuggestionsRequest' }>
+  ): Promise<void> {
+    const safeCursor = Math.max(0, Math.min(message.cursor, message.text.length));
+    const root = this.getWorkspaceRoot();
+    if (!root) {
+      this.post({
+        type: 'mentionSuggestionsResult',
+        requestId: message.requestId,
+        active: false,
+        rangeStart: safeCursor,
+        rangeEnd: safeCursor,
+        items: [],
+      });
+      return;
+    }
+
+    try {
+      const host = new VsCodeWorkspaceHost(root, { workspaceFolders: this.getWorkspaceFolders() });
+      const result = await resolveMentionSuggestions(
+        {
+          text: message.text,
+          cursor: safeCursor,
+        },
+        createMentionSuggestionSource(host)
+      );
+      this.post({ type: 'mentionSuggestionsResult', requestId: message.requestId, ...result });
+    } catch {
+      this.post({
+        type: 'mentionSuggestionsResult',
+        requestId: message.requestId,
+        active: false,
+        rangeStart: safeCursor,
+        rangeEnd: safeCursor,
+        items: [],
+      });
     }
   }
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildSkillCandidatePaths, resolveSkillFile } from '../src/extension/skills';
+import { buildSkillCandidatePaths, listSkillNames, resolveSkillFile } from '../src/extension/skills';
 
 function readFrom(files: Record<string, string>): (path: string) => Promise<string> {
   return async (path: string) => {
@@ -7,6 +7,18 @@ function readFrom(files: Record<string, string>): (path: string) => Promise<stri
       throw new Error(`ENOENT: ${path}`);
     }
     return files[path]!;
+  };
+}
+
+function listFrom(
+  folders: Record<string, Array<{ name: string; type: 'file' | 'dir' }>>
+): (path: string) => Promise<Array<{ name: string; type: 'file' | 'dir' }>> {
+  return async (path: string) => {
+    const entries = folders[path];
+    if (!entries) {
+      throw new Error(`ENOENT: ${path}`);
+    }
+    return entries;
   };
 }
 
@@ -61,5 +73,26 @@ describe('resolveSkillFile', () => {
     await expect(
       resolveSkillFile('empty', readFrom({ '.bestide/skills/empty.md': '   ' }))
     ).rejects.toThrow(/is empty/i);
+  });
+});
+
+describe('listSkillNames', () => {
+  it('lists markdown and folder SKILL.md skills', async () => {
+    const names = await listSkillNames(
+      listFrom({
+        '.bestide/skills': [
+          { name: 'review.md', type: 'file' },
+          { name: 'refactor', type: 'dir' },
+          { name: 'notes.txt', type: 'file' },
+        ],
+        '.bestide/skills/refactor': [{ name: 'SKILL.md', type: 'file' }],
+      })
+    );
+    expect(names).toEqual(['refactor', 'review']);
+  });
+
+  it('returns an empty list when the skills folder is missing', async () => {
+    const names = await listSkillNames(listFrom({}));
+    expect(names).toEqual([]);
   });
 });
