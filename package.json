@@ -352,5 +352,5 @@
     "vsix": "node esbuild.mjs --production && vsce package --no-dependencies --allow-missing-repository",
     "watch": "node esbuild.mjs --watch"
   },
-  "version": "0.1.0"
+  "version": "0.2.0"
 }
