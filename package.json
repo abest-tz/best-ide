@@ -376,5 +376,5 @@
     "vsix": "node esbuild.mjs --production && vsce package --no-dependencies",
     "watch": "node esbuild.mjs --watch"
   },
-  "version": "0.3.0"
+  "version": "0.3.1"
 }

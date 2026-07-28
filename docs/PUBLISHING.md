@@ -11,11 +11,7 @@ Publisher id: `BestIDE` · Extension: `best-ide-agent`
 1. Create/verify publisher **BestIDE** at [Visual Studio Marketplace Manage](https://marketplace.visualstudio.com/manage).
 2. In Microsoft Entra ID, create an app registration (or user-assigned managed identity) with a **federated credential** for this repo. Subject example:
    - `repo:abest-tz/best-ide:environment:marketplace`
-3. Add that identity as a member of the Marketplace publisher:
-   - Run **Actions → Marketplace identity → Run workflow** (environment `marketplace`).
-   - Copy the printed **Marketplace member id**.
-   - Paste it at [BestIDE Members](https://marketplace.visualstudio.com/manage/publishers/BestIDE) with role **Creator** or **Contributor**.
-   - Do not use `AZURE_CLIENT_ID`, the Azure `principalId`, or your personal profile id.
+3. Add that identity as a member of the Marketplace publisher ([BestIDE Members](https://marketplace.visualstudio.com/manage/publishers/BestIDE)): paste the managed identity’s Marketplace profile `id` (from `/_apis/profile/profiles/me` while OIDC-logged-in as the MI), role **Creator** or **Contributor**. Do not use `AZURE_CLIENT_ID`, the Azure `principalId`, or your personal profile id.
 4. In GitHub → Settings → Environments → `marketplace`, set:
 
 | Name | Type | Purpose |
@@ -46,7 +42,7 @@ No `AZURE_CLIENT_SECRET` when using federated credentials. Azure DevOps Marketpl
 ```bash
 npm run typecheck && npm run test && npm run coverage && npm run build
 npm run vsix   # optional local smoke
-gh release create v0.3.0 --generate-notes
+gh release create v0.3.1 --generate-notes
 ```
 
 Publishing runs on `release: published` via `.github/workflows/publish.yml`.
@@ -55,5 +51,5 @@ Publishing runs on `release: published` via `.github/workflows/publish.yml`.
 
 ```bash
 npm run publish:marketplace   # requires az login + Marketplace membership
-npm run publish:ovsx -- path/to/best-ide-agent-0.3.0.vsix
+npm run publish:ovsx -- path/to/best-ide-agent-0.3.1.vsix
 ```
