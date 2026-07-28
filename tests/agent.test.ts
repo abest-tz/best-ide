@@ -11,6 +11,7 @@ function mockHost(overrides: Partial<WorkspaceHost> = {}): WorkspaceHost {
     listDir: vi.fn().mockResolvedValue([]),
     grep: vi.fn().mockResolvedValue(''),
     exec: vi.fn().mockResolvedValue({ stdout: '', stderr: '', exitCode: 0 }),
+    callMcpTool: vi.fn().mockResolvedValue('MCP tool call completed'),
     ...overrides,
   };
 }
@@ -123,6 +124,31 @@ describe('Agent basic chat', () => {
       'user',
     ]);
     expect(client.requests[0]?.messages[0]?.content).toBe('Persisted system prompt');
+  });
+
+  it('prepends the default system prompt when initialMessages lack a system message', async () => {
+    const client = scriptedClient([textTurn('ok')]);
+    const agent = new Agent({
+      client,
+      host: mockHost(),
+      model: 'test-model',
+      temperature: 0,
+      systemPrompt: 'Custom system',
+      initialMessages: [
+        { role: 'user', content: 'Earlier question' },
+        { role: 'assistant', content: 'Earlier answer' },
+      ],
+    });
+
+    await agent.run('next', callbacks());
+
+    expect(client.requests[0]?.messages.map((message) => message.role)).toEqual([
+      'system',
+      'user',
+      'assistant',
+      'user',
+    ]);
+    expect(client.requests[0]?.messages[0]?.content).toBe('Custom system');
   });
 
   it('keeps history across runs and reset clears it back to the system prompt', async () => {
@@ -254,6 +280,38 @@ describe('Agent tool dispatch', () => {
     expect(toolMessage?.content).toMatch(/rejected/i);
   });
 
+  it('requests approval for mcp_call_tool and skips execution when rejected', async () => {
+    const client = scriptedClient([
+      toolTurn(['mcp_call_tool', { server: 'github', tool: 'list_issues', arguments: {} }]),
+      textTurn('understood'),
+    ]);
+    const host = mockHost();
+    const cb = callbacks({ requestApproval: vi.fn().mockResolvedValue(false) });
+    const agent = makeAgent(client, host);
+
+    await agent.run('list issues', cb);
+
+    expect(cb.requestApproval).toHaveBeenCalled();
+    expect(host.callMcpTool).not.toHaveBeenCalled();
+    const toolMessage = client.requests[1]!.messages.find((m) => m.role === 'tool');
+    expect(toolMessage?.content).toMatch(/rejected/i);
+  });
+
+  it('skips mcp_call_tool approval when autoApprove is enabled', async () => {
+    const client = scriptedClient([
+      toolTurn(['mcp_call_tool', { server: 'github', tool: 'list_issues', arguments: {} }]),
+      textTurn('done'),
+    ]);
+    const host = mockHost();
+    const cb = callbacks();
+    const agent = makeAgent(client, host, { autoApprove: true });
+
+    await agent.run('go', cb);
+
+    expect(cb.requestApproval).not.toHaveBeenCalled();
+    expect(host.callMcpTool).toHaveBeenCalledWith('github', 'list_issues', {});
+  });
+
   it('skips approval when autoApprove is enabled', async () => {
     const client = scriptedClient([
       toolTurn(['run_command', { command: 'pwd' }]),
@@ -316,6 +374,17 @@ describe('Agent step cap', () => {
 
     expect(client.requests).toHaveLength(3);
     expect(cb.onNotice).toHaveBeenCalledWith(expect.stringMatching(/step limit/i));
+  });
+
+  it('stops immediately when maxSteps is zero', async () => {
+    const client = scriptedClient([textTurn('should not run')]);
+    const cb = callbacks();
+    const agent = makeAgent(client, mockHost(), { maxSteps: 0 });
+
+    await agent.run('anything', cb);
+
+    expect(client.requests).toHaveLength(0);
+    expect(cb.onNotice).toHaveBeenCalledWith(expect.stringMatching(/step limit of 0/i));
   });
 
   it('continues after maxSteps when continuation is approved', async () => {

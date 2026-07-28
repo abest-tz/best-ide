@@ -1,4 +1,4 @@
-import { exec } from 'node:child_process';
+import { exec, spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
 import type { DirEntry, ExecResult, WorkspaceHost } from '../core/host';
@@ -19,6 +19,14 @@ import {
   type SemanticDocument,
 } from './semanticIndex';
 import {
+  AGENT_SHELL_END_PREFIX,
+  AGENT_SHELL_SENTINEL,
+  AGENT_SHELL_START_PREFIX,
+  buildRunCommandScript,
+  resolveRunCommandShellCandidates,
+  type RunCommandShellLaunch,
+} from './runCommandShell';
+import {
   displayWorkspacePath,
   resolveWorkspacePath,
   type WorkspaceRoot,
@@ -38,9 +46,7 @@ const SYMBOLS_MAX_RESULTS = 300;
 const SEMANTIC_MAX_FILES = 400;
 const SEMANTIC_MAX_FILE_CHARS = 250_000;
 const SEMANTIC_CACHE_TTL_MS = 5 * 60_000;
-const RUN_COMMAND_TERMINAL_NAME = 'Best IDE Agent';
-const SHELL_INTEGRATION_TIMEOUT_MS = 3_000;
-const OUTPUT_FLUSH_GRACE_MS = 120;
+const AGENT_SHELL_EXIT_CODE_TAIL_GUARD = 32;
 const ANSI_ESCAPE_PATTERN = /\u001B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g;
 const OSC_ESCAPE_PATTERN = /\u001B\][^\u0007]*(?:\u0007|\u001B\\)/g;
 
@@ -65,7 +71,6 @@ interface McpOptions {
 interface RunCommandOptions {
   allowlist?: readonly string[];
   denylist?: readonly string[];
-  shellIntegrationTimeoutMs?: number;
   cwd?: string;
   env?: Record<string, string>;
   inheritEnv?: boolean;
@@ -75,6 +80,8 @@ interface RunCommandOptions {
 
 interface VsCodeWorkspaceHostOptions {
   onWriteFile?: (change: StagedWrite) => Promise<void> | void;
+  /** When set, `readFile` returns staged content instead of disk for that path. */
+  getPendingContent?: (path: string) => string | undefined;
   workspaceFolders?: readonly vscode.WorkspaceFolder[];
   semanticSearch?: SemanticSearchOptions;
   mcp?: McpOptions;
@@ -87,6 +94,20 @@ interface CachedSemanticIndex {
   model: string;
   builtAtMs: number;
   chunks: SemanticChunk[];
+}
+
+interface AgentShellRequest {
+  id: string;
+  command: string;
+  timeoutMs: number;
+  startToken: string;
+  endTokenPrefix: string;
+  started: boolean;
+  stdout: string;
+  stderr: string;
+  timeoutHandle: NodeJS.Timeout | undefined;
+  resolve(result: ExecResult): void;
+  reject(error: Error): void;
 }
 
 function severityLabel(severity: vscode.DiagnosticSeverity): string {
@@ -188,12 +209,17 @@ export class VsCodeWorkspaceHost implements WorkspaceHost {
   private readonly primaryRootName: string;
   private readonly mcpClient: McpClientManager | undefined;
   private readonly commandPolicy: CommandPolicy;
-  private readonly shellIntegrationTimeoutMs: number;
   private readonly runCommandCwd: string;
   private readonly runCommandEnv: Record<string, string>;
   private readonly runCommandStrictEnv: boolean;
   private readonly runCommandTimeoutPolicy: RunCommandTimeoutPolicy;
   private readonly runCommandSandboxConfigurationError: string | undefined;
+  private readonly runCommandQueue: AgentShellRequest[] = [];
+  private runCommandShell: ChildProcessWithoutNullStreams | undefined;
+  private runCommandShellKind: RunCommandShellLaunch['kind'] = 'posix';
+  private runCommandShellStdoutBuffer = '';
+  private runCommandShellActiveRequest: AgentShellRequest | undefined;
+  private runCommandShellRequestCounter = 0;
   private semanticIndexCache: CachedSemanticIndex | undefined;
 
   constructor(root: vscode.Uri, options: VsCodeWorkspaceHostOptions = {}) {
@@ -212,12 +238,6 @@ export class VsCodeWorkspaceHost implements WorkspaceHost {
       allowlist: normalizeCommandEntries(options.runCommand?.allowlist),
       denylist: normalizeCommandEntries(options.runCommand?.denylist),
     };
-    const configuredShellIntegrationTimeoutMs = options.runCommand?.shellIntegrationTimeoutMs;
-    this.shellIntegrationTimeoutMs =
-      typeof configuredShellIntegrationTimeoutMs === 'number' &&
-      Number.isFinite(configuredShellIntegrationTimeoutMs)
-        ? Math.max(500, Math.floor(configuredShellIntegrationTimeoutMs))
-        : SHELL_INTEGRATION_TIMEOUT_MS;
 
     let resolvedRunCommandCwd = root.fsPath;
     let runCommandSandboxConfigurationError: string | undefined;
@@ -257,18 +277,28 @@ export class VsCodeWorkspaceHost implements WorkspaceHost {
   }
 
   async readFile(relativePath: string): Promise<string> {
-    const bytes = await vscode.workspace.fs.readFile(this.resolve(relativePath));
+    const resolved = resolveWorkspacePath(relativePath, this.roots, this.primaryRootName);
+    const pending = this.options.getPendingContent?.(resolved.displayPath);
+    if (pending !== undefined) {
+      return pending;
+    }
+    const bytes = await vscode.workspace.fs.readFile(vscode.Uri.file(resolved.absolutePath));
     return new TextDecoder().decode(bytes);
   }
 
   async writeFile(relativePath: string, content: string): Promise<void> {
     const resolved = resolveWorkspacePath(relativePath, this.roots, this.primaryRootName);
     const uri = vscode.Uri.file(resolved.absolutePath);
+    const pending = this.options.getPendingContent?.(resolved.displayPath);
     let previousContent: string | undefined;
-    try {
-      previousContent = new TextDecoder().decode(await vscode.workspace.fs.readFile(uri));
-    } catch {
-      previousContent = undefined;
+    if (pending !== undefined) {
+      previousContent = pending;
+    } else {
+      try {
+        previousContent = new TextDecoder().decode(await vscode.workspace.fs.readFile(uri));
+      } catch {
+        previousContent = undefined;
+      }
     }
 
     if (this.options.onWriteFile) {
@@ -470,155 +500,291 @@ export class VsCodeWorkspaceHost implements WorkspaceHost {
       throw new Error(policyDecision.reason ?? 'run_command is blocked by policy');
     }
     if (command.includes('\n') || command.includes('\r')) {
-      throw new Error('run_command supports single-line commands only in integrated terminal mode');
+      throw new Error('run_command supports single-line commands only');
     }
     if (this.runCommandSandboxConfigurationError) {
       throw new Error(this.runCommandSandboxConfigurationError);
     }
-
-    const terminalOptions: vscode.TerminalOptions & { strictEnv?: boolean } = {
-      name: RUN_COMMAND_TERMINAL_NAME,
-      cwd: this.runCommandCwd,
-      isTransient: true,
-    };
-    if (Object.keys(this.runCommandEnv).length > 0) {
-      terminalOptions.env = this.runCommandEnv;
-    }
-    if (this.runCommandStrictEnv) {
-      terminalOptions.strictEnv = true;
-    }
-    const terminal = vscode.window.createTerminal(terminalOptions);
-    terminal.show(true);
-
-    const shellIntegration = await this.waitForShellIntegration(terminal);
-    const execution = shellIntegration.executeCommand(command);
-    const outputCapture = this.captureExecutionOutput(execution);
     const effectiveTimeoutMs = resolveCommandTimeoutMs(timeoutMs, this.runCommandTimeoutPolicy);
+    try {
+      return await this.enqueueRunCommand(command, effectiveTimeoutMs);
+    } catch (error) {
+      if (process.platform === 'win32' && this.isShellUnavailableError(error)) {
+        return this.execRunCommandFallback(command, effectiveTimeoutMs);
+      }
+      throw error;
+    }
+  }
+
+  private isShellUnavailableError(error: unknown): boolean {
+    const message = error instanceof Error ? error.message : String(error);
+    return /ENOENT|not found|failed to spawn|agent command shell/i.test(message);
+  }
+
+  private execRunCommandFallback(command: string, timeoutMs: number): Promise<ExecResult> {
+    return new Promise((resolve, reject) => {
+      exec(
+        command,
+        {
+          cwd: this.runCommandCwd,
+          env: this.resolveRunCommandEnv(),
+          timeout: timeoutMs,
+          maxBuffer: EXEC_MAX_BUFFER,
+        },
+        (error, stdout, stderr) => {
+          if (error && error.killed) {
+            reject(new Error(`command timed out after ${timeoutMs}ms`));
+            return;
+          }
+          resolve({
+            stdout: sanitizeTerminalOutput(stdout).trim(),
+            stderr: sanitizeTerminalOutput(stderr).trim(),
+            exitCode: error ? (typeof error.code === 'number' ? error.code : 1) : 0,
+          });
+        }
+      );
+    });
+  }
+
+  private enqueueRunCommand(command: string, timeoutMs: number): Promise<ExecResult> {
+    return new Promise((resolve, reject) => {
+      const requestId = `${Date.now()}-${++this.runCommandShellRequestCounter}`;
+      this.runCommandQueue.push({
+        id: requestId,
+        command,
+        timeoutMs,
+        startToken: `${AGENT_SHELL_SENTINEL}${AGENT_SHELL_START_PREFIX}${requestId}${AGENT_SHELL_SENTINEL}`,
+        endTokenPrefix: `${AGENT_SHELL_SENTINEL}${AGENT_SHELL_END_PREFIX}${requestId}:`,
+        started: false,
+        stdout: '',
+        stderr: '',
+        timeoutHandle: undefined,
+        resolve,
+        reject,
+      });
+      this.processRunCommandQueue();
+    });
+  }
+
+  private processRunCommandQueue(): void {
+    if (this.runCommandShellActiveRequest) {
+      return;
+    }
+    const request = this.runCommandQueue.shift();
+    if (!request) {
+      return;
+    }
+
+    let shell: ChildProcessWithoutNullStreams;
+    try {
+      shell = this.ensureRunCommandShell();
+    } catch (error) {
+      request.reject(error instanceof Error ? error : new Error(String(error)));
+      this.processRunCommandQueue();
+      return;
+    }
+
+    this.runCommandShellActiveRequest = request;
+    request.timeoutHandle = setTimeout(() => {
+      this.onRunCommandTimeout(request);
+    }, request.timeoutMs);
 
     try {
-      const exitCode = await this.waitForExecutionExit(execution, effectiveTimeoutMs);
-      await Promise.race([outputCapture.finished, this.delay(OUTPUT_FLUSH_GRACE_MS)]);
-      return {
-        stdout: sanitizeTerminalOutput(outputCapture.getOutput()).trim(),
-        stderr: '',
-        exitCode,
-      };
+      shell.stdin.write(this.buildRunCommandScript(request));
     } catch (error) {
-      terminal.sendText('\u0003', false);
-      throw error;
-    } finally {
-      outputCapture.stop();
-      terminal.dispose();
+      this.failRunCommandRequest(
+        request,
+        error instanceof Error ? error : new Error('failed to write command to agent shell')
+      );
     }
   }
 
-  private waitForShellIntegration(terminal: vscode.Terminal): Promise<vscode.TerminalShellIntegration> {
-    if (terminal.shellIntegration) {
-      return Promise.resolve(terminal.shellIntegration);
+  private ensureRunCommandShell(): ChildProcessWithoutNullStreams {
+    if (this.runCommandShell && !this.runCommandShell.killed) {
+      return this.runCommandShell;
     }
-
-    return new Promise((resolve, reject) => {
-      let settled = false;
-      const cleanup = (): void => {
-        integrationDisposable.dispose();
-        closeDisposable.dispose();
-        clearTimeout(timeoutHandle);
-      };
-      const settle = (finalizer: () => void): void => {
-        if (settled) {
-          return;
-        }
-        settled = true;
-        cleanup();
-        finalizer();
-      };
-
-      const integrationDisposable = vscode.window.onDidChangeTerminalShellIntegration((event) => {
-        if (event.terminal !== terminal) {
-          return;
-        }
-        settle(() => resolve(event.shellIntegration));
-      });
-      const closeDisposable = vscode.window.onDidCloseTerminal((closedTerminal) => {
-        if (closedTerminal !== terminal) {
-          return;
-        }
-        settle(() => reject(new Error('integrated terminal closed before shell integration activated')));
-      });
-      const timeoutHandle = setTimeout(() => {
-        settle(() =>
-          reject(
-            new Error(
-              `shell integration did not activate within ${this.shellIntegrationTimeoutMs}ms; cannot run command in integrated terminal`
-            )
-          )
-        );
-      }, this.shellIntegrationTimeoutMs);
+    const launch = resolveRunCommandShellCandidates(process.platform)[0];
+    if (!launch) {
+      throw new Error('no agent command shell available');
+    }
+    const shell = spawn(launch.command, launch.args, {
+      cwd: this.runCommandCwd,
+      env: this.resolveRunCommandEnv(),
+      stdio: 'pipe',
     });
-  }
-
-  private waitForExecutionExit(
-    execution: vscode.TerminalShellExecution,
-    timeoutMs: number
-  ): Promise<number> {
-    return new Promise((resolve, reject) => {
-      let settled = false;
-      const cleanup = (): void => {
-        endDisposable.dispose();
-        clearTimeout(timeoutHandle);
-      };
-      const settle = (finalizer: () => void): void => {
-        if (settled) {
-          return;
-        }
-        settled = true;
-        cleanup();
-        finalizer();
-      };
-
-      const endDisposable = vscode.window.onDidEndTerminalShellExecution((event) => {
-        if (event.execution !== execution) {
-          return;
-        }
-        settle(() => resolve(event.exitCode ?? 1));
-      });
-      const timeoutHandle = setTimeout(() => {
-        settle(() => reject(new Error(`command timed out after ${timeoutMs}ms`)));
-      }, timeoutMs);
+    this.runCommandShellKind = launch.kind;
+    shell.stdout.setEncoding('utf8');
+    shell.stderr.setEncoding('utf8');
+    shell.stdout.on('data', (chunk: string | Buffer) => {
+      this.handleRunCommandStdoutChunk(typeof chunk === 'string' ? chunk : chunk.toString('utf8'));
     });
-  }
-
-  private captureExecutionOutput(execution: vscode.TerminalShellExecution): {
-    getOutput: () => string;
-    finished: Promise<void>;
-    stop: () => void;
-  } {
-    let output = '';
-    let stopped = false;
-    const finished = (async () => {
-      for await (const chunk of execution.read()) {
-        if (stopped || chunk.length === 0 || output.length >= EXEC_MAX_BUFFER) {
-          continue;
-        }
-        const remaining = EXEC_MAX_BUFFER - output.length;
-        output += chunk.slice(0, remaining);
+    shell.stderr.on('data', (chunk: string | Buffer) => {
+      this.handleRunCommandStderrChunk(typeof chunk === 'string' ? chunk : chunk.toString('utf8'));
+    });
+    shell.on('error', (error) => {
+      if (this.runCommandShell !== shell) {
+        return;
       }
-    })().catch(() => {
-      // Ignore stream errors here; exit code is resolved independently.
+      this.runCommandShell = undefined;
+      this.runCommandShellStdoutBuffer = '';
+      this.failActiveRunCommandRequest(error instanceof Error ? error : new Error(String(error)));
     });
-    return {
-      getOutput: () => output,
-      finished,
-      stop: () => {
-        stopped = true;
-      },
-    };
+    shell.on('exit', (code, signal) => {
+      if (this.runCommandShell !== shell) {
+        return;
+      }
+      this.runCommandShell = undefined;
+      this.runCommandShellStdoutBuffer = '';
+      const reason = signal ? `signal ${signal}` : `exit code ${code ?? 'unknown'}`;
+      this.failActiveRunCommandRequest(new Error(`agent command shell exited unexpectedly (${reason})`));
+    });
+    this.runCommandShell = shell;
+    return shell;
   }
 
-  private delay(ms: number): Promise<void> {
-    return new Promise((resolve) => {
-      setTimeout(resolve, ms);
+  private resolveRunCommandEnv(): NodeJS.ProcessEnv {
+    if (this.runCommandStrictEnv) {
+      return { ...this.runCommandEnv };
+    }
+    return { ...process.env, ...this.runCommandEnv };
+  }
+
+  private buildRunCommandScript(request: AgentShellRequest): string {
+    return buildRunCommandScript(this.runCommandShellKind, {
+      command: request.command,
+      startToken: request.startToken,
+      endTokenPrefix: request.endTokenPrefix,
     });
+  }
+
+  private handleRunCommandStdoutChunk(chunk: string): void {
+    if (chunk === '') {
+      return;
+    }
+    this.runCommandShellStdoutBuffer += chunk;
+    this.consumeRunCommandStdoutBuffer();
+  }
+
+  private consumeRunCommandStdoutBuffer(): void {
+    const request = this.runCommandShellActiveRequest;
+    if (!request) {
+      this.runCommandShellStdoutBuffer = '';
+      return;
+    }
+
+    let buffer = this.runCommandShellStdoutBuffer;
+    if (!request.started) {
+      const startIndex = buffer.indexOf(request.startToken);
+      if (startIndex === -1) {
+        const keepChars = Math.max(0, request.startToken.length - 1);
+        this.runCommandShellStdoutBuffer = keepChars === 0 ? '' : buffer.slice(-keepChars);
+        return;
+      }
+      request.started = true;
+      buffer = buffer.slice(startIndex + request.startToken.length);
+    }
+
+    const endIndex = buffer.indexOf(request.endTokenPrefix);
+    if (endIndex === -1) {
+      const keepChars = request.endTokenPrefix.length + AGENT_SHELL_EXIT_CODE_TAIL_GUARD;
+      if (buffer.length > keepChars) {
+        request.stdout = this.appendCapturedOutput(request.stdout, buffer.slice(0, buffer.length - keepChars));
+        buffer = buffer.slice(-keepChars);
+      }
+      this.runCommandShellStdoutBuffer = buffer;
+      return;
+    }
+
+    request.stdout = this.appendCapturedOutput(request.stdout, buffer.slice(0, endIndex));
+    const exitCodeStart = endIndex + request.endTokenPrefix.length;
+    const exitCodeEnd = buffer.indexOf(AGENT_SHELL_SENTINEL, exitCodeStart);
+    if (exitCodeEnd === -1) {
+      this.runCommandShellStdoutBuffer = buffer.slice(endIndex);
+      return;
+    }
+
+    const parsedExitCode = Number.parseInt(buffer.slice(exitCodeStart, exitCodeEnd).trim(), 10);
+    const exitCode = Number.isFinite(parsedExitCode) ? parsedExitCode : 1;
+    this.runCommandShellStdoutBuffer = buffer.slice(exitCodeEnd + AGENT_SHELL_SENTINEL.length);
+    this.completeRunCommandRequest(request, exitCode);
+  }
+
+  private handleRunCommandStderrChunk(chunk: string): void {
+    if (chunk === '') {
+      return;
+    }
+    const request = this.runCommandShellActiveRequest;
+    if (!request) {
+      return;
+    }
+    request.stderr = this.appendCapturedOutput(request.stderr, chunk);
+  }
+
+  private appendCapturedOutput(current: string, nextChunk: string): string {
+    if (nextChunk === '' || current.length >= EXEC_MAX_BUFFER) {
+      return current;
+    }
+    const remaining = EXEC_MAX_BUFFER - current.length;
+    return current + nextChunk.slice(0, remaining);
+  }
+
+  private completeRunCommandRequest(request: AgentShellRequest, exitCode: number): void {
+    if (this.runCommandShellActiveRequest !== request) {
+      return;
+    }
+    this.clearRunCommandTimeout(request);
+    this.runCommandShellActiveRequest = undefined;
+    request.resolve({
+      stdout: sanitizeTerminalOutput(request.stdout).trim(),
+      stderr: sanitizeTerminalOutput(request.stderr).trim(),
+      exitCode,
+    });
+    this.processRunCommandQueue();
+    this.consumeRunCommandStdoutBuffer();
+  }
+
+  private failActiveRunCommandRequest(error: Error): void {
+    const request = this.runCommandShellActiveRequest;
+    if (!request) {
+      return;
+    }
+    this.failRunCommandRequest(request, error);
+  }
+
+  private failRunCommandRequest(request: AgentShellRequest, error: Error): void {
+    if (this.runCommandShellActiveRequest === request) {
+      this.runCommandShellActiveRequest = undefined;
+    }
+    this.clearRunCommandTimeout(request);
+    request.reject(error);
+    this.processRunCommandQueue();
+  }
+
+  private onRunCommandTimeout(request: AgentShellRequest): void {
+    if (this.runCommandShellActiveRequest !== request) {
+      return;
+    }
+    this.terminateRunCommandShell();
+    this.failRunCommandRequest(request, new Error(`command timed out after ${request.timeoutMs}ms`));
+  }
+
+  private clearRunCommandTimeout(request: AgentShellRequest): void {
+    if (request.timeoutHandle) {
+      clearTimeout(request.timeoutHandle);
+      request.timeoutHandle = undefined;
+    }
+  }
+
+  private terminateRunCommandShell(): void {
+    const shell = this.runCommandShell;
+    if (!shell) {
+      return;
+    }
+    this.runCommandShell = undefined;
+    this.runCommandShellStdoutBuffer = '';
+    if (!shell.killed) {
+      shell.kill();
+    }
   }
 
   async getDiagnostics(relativePath?: string): Promise<string> {

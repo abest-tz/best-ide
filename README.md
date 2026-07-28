@@ -2,7 +2,7 @@
 
 An agentic coding assistant for VS Code powered by **local LLMs** via [LM Studio](https://lmstudio.ai) (or any OpenAI-compatible endpoint). No cloud, no Copilot dependency.
 
-This is the MVP extension for a future VS Code fork — the agent core under `src/core/` is editor-agnostic and designed to be embedded into the fork later. See [ROADMAP.md](ROADMAP.md) for planned features.
+This extension uses an editor-agnostic agent core under `src/core/`, which keeps the architecture modular and easier to evolve over time. See [TODO.md](TODO.md) for known gaps and near-term fixes.
 
 ## Features
 
@@ -10,8 +10,9 @@ This is the MVP extension for a future VS Code fork — the agent core under `sr
 - Agentic tool loop: file/dir search, regex + semantic code search, targeted `search_replace`, diagnostics/symbol lookup, git status/diff, file writes, and terminal commands
 - Optional MCP tool bridge: connect stdio MCP servers and call external tools from agent runs
 - Chat defaults to the right-hand auxiliary sidebar
-- Editor-native file review: agent edits open as pending diffs with Accept/Reject/Accept All, plus one-click revert of the last accepted turn
-- Approval flow: `run_command` requires explicit pre-execution approval
+- Editor-native file review: agent edits stage as pending diffs; open on demand with **Review**, then Accept/Reject/Accept All, plus one-click revert of the last accepted turn
+- Approval flow: `run_command` and `mcp_call_tool` require explicit pre-execution approval
+- Dedicated agent shell for `run_command` (POSIX and Windows PowerShell), with command + output shown in collapsible chat cards
 - Ask/Agent/Composer chat modes: use Ask for read-only analysis, Agent for standard tool use, or Composer for structured plan-and-apply multi-file tasks
 - Project guidance via `.bestide/rules.md`, plus task-scoped skills loaded with `@skill:name` from `.bestide/skills/`
 - Graceful step-limit resume: continue or stop when `bestIde.maxSteps` is reached
@@ -32,34 +33,33 @@ This is the MVP extension for a future VS Code fork — the agent core under `sr
 3. Open the **Developer** tab and start the local server (defaults to `http://localhost:1234`)
 4. Load the model into the server
 
-### 2. Install the extension from source
+### 2. Install the extension
 
-The extension isn't published to the marketplace yet. To build and install it locally:
+**From a marketplace** (after publish):
 
-1. **Clone and build a VSIX package:**
+- [Visual Studio Marketplace](https://marketplace.visualstudio.com/items?itemName=BestIDE.best-ide-agent)
+- [Open VSX](https://open-vsx.org/extension/BestIDE/best-ide-agent)
 
-   ```bash
-   git clone <repo-url>
-   cd best-ide
-   npm install
-   npm run vsix
-   ```
+**From source / VSIX:**
 
-   This produces `best-ide-agent-<version>.vsix` in the project root.
+```bash
+git clone <repo-url>
+cd best-ide
+npm install
+npm run install:local
+```
 
-2. **Install the VSIX** (either way works):
+That builds a VSIX and installs it into Cursor (preferred) or VS Code with `--force`. Then **Developer: Reload Window** from the Command Palette.
 
-   - **CLI:** `code --install-extension best-ide-agent-0.1.0.vsix`
-     (if `code` isn't on your PATH, run "Shell Command: Install 'code' command in PATH" from the VS Code command palette first)
-   - **UI:** open the Extensions view, click the `...` menu in its top-right corner, choose **Install from VSIX...**, and select the file
+Manual equivalent:
 
-3. **Configure it:** reload VS Code, open Settings, search for `bestIde`, and run **Best IDE: Set API Key** from the command palette if your LM Studio server has authentication enabled (LM Studio > Developer > API tokens). The key is stored in VS Code Secret Storage.
+1. **Build a VSIX:** `npm run vsix` → `best-ide-agent-<version>.vsix` in the project root
+2. **Install:**
+   - **CLI:** `cursor --install-extension best-ide-agent-*.vsix --force` (or `code` instead of `cursor`)
+   - **UI:** Extensions view → `...` → **Install from VSIX...**
+3. **Configure:** open Settings, search for `bestIde`, and run **Best IDE: Set API Key** if your LM Studio server has authentication enabled (LM Studio > Developer > API tokens). The key is stored in VS Code Secret Storage.
 
-To update after pulling new changes, re-run `npm run vsix` and install the new VSIX over the old one.
-
-### 3. Run from source instead (Development Host)
-
-For hacking on the extension itself, skip the VSIX: run `./setup_and_run.sh` (or `npm install && npm run build`), open this folder in VS Code, and press **F5** to launch the Extension Development Host.
+To pick up code changes after editing the repo, re-run `npm run install:local` and reload the window. For day-to-day extension development (F5 + watch), see [CONTRIBUTING.md](CONTRIBUTING.md). Publishing runbook: [docs/PUBLISHING.md](docs/PUBLISHING.md).
 
 ## Settings
 
@@ -72,12 +72,12 @@ For hacking on the extension itself, skip the VSIX: run `./setup_and_run.sh` (or
 | `bestIde.backendRouting`             | `{}`                       | Optional per-operation backend fallback order: `chat`, `models`, `embeddings`, `inlineCompletions`. |
 | `bestIde.model`                      | *(first available)*        | Default picked model id (used when no per-mode routing override is configured). |
 | `bestIde.modelRouting`               | `{}`                       | Optional model overrides by route: `agent`, `ask`, `composer`, `embeddings`, `inlineCompletions`. |
-| `bestIde.embeddingModel`             | *(empty)*                  | Legacy/default embedding model id (used by the built-in `local` backend profile). |
+| `bestIde.embeddingModel`             | *(empty)*                  | Legacy/default embedding model id (used by the built-in `local` backend profile). Required for `semantic_search`. |
 | `bestIde.mcp.servers`                | `{}`                       | Optional MCP servers keyed by name (`command`, optional `args`/`env`/`cwd`). |
 | `bestIde.mcp.requestTimeoutMs`       | `15000`                    | Timeout for MCP list/call requests. |
 | `bestIde.chatMode`                   | `agent`                    | `agent` for standard tool use, `composer` for structured multi-file plan+apply, `ask` for read-only chat. |
 | `bestIde.temperature`                | `0.2`                      | Sampling temperature. |
-| `bestIde.autoApprove`                | `false`                    | Skip approval for mutating tools. |
+| `bestIde.autoApprove`                | `false`                    | Skip pre-execution approval for `run_command` and `mcp_call_tool` (does not auto-accept pending file diffs). |
 | `bestIde.runCommand.allowlist`       | `[]`                       | Optional allowlist of executable names for `run_command`; when set, all command segments must be allowlisted. |
 | `bestIde.runCommand.denylist`        | `[]`                       | Executable names blocked for `run_command`; denylist always overrides allowlist. |
 | `bestIde.runCommand.cwd`             | *(workspace root)*         | Optional workspace-relative working directory sandbox for `run_command`. |
@@ -95,7 +95,7 @@ Use `Best IDE: Set API Key` and `Best IDE: Clear API Key` from the command palet
 ## Privacy and offline story
 
 - By default, Best IDE is local-first: point `bestIde.baseUrl` (or your `local` backend profile) at a local OpenAI-compatible server such as LM Studio.
-- Extension data stays on your machine: conversation threads are saved in local VS Code extension state, and agent file edits happen in your workspace.
+- Extension data stays on your machine: conversation threads and pending file-review state are saved in local VS Code extension state, and agent file edits happen in your workspace.
 - Nothing is sent to Best IDE-managed cloud services because this project does not run one. Network traffic goes only to the model/MCP endpoints you configure.
 - If you add non-local backends (for fallback, cost, or quality routing), requests for those operations are sent to those configured providers by design.
 
@@ -106,37 +106,12 @@ Use `Best IDE: Set API Key` and `Best IDE: Clear API Key` from the command palet
 - Reference a skill in chat with `@skill:name` (for example `@skill:test-driven` loads `.bestide/skills/test-driven.md` if it exists).
 - Skills can also be folders containing `SKILL.md` (for example `.bestide/skills/refactor/SKILL.md`).
 
-## Development
+## Contributing
 
-```bash
-npm run test        # unit tests (Vitest)
-npm run coverage    # coverage report (90% threshold on src/core)
-npm run typecheck   # tsc --noEmit
-npm run watch       # rebuild on change
-```
-
-To run a live closed-loop test of the agent core against a running LM Studio server (writes to a throwaway temp dir, never your workspace):
-
-```bash
-LM_API_TOKEN=your-token npx esbuild scripts/live-e2e.ts --bundle --platform=node \
-  --outfile=dist/live-e2e.cjs --log-level=error && node dist/live-e2e.cjs
-```
-
-The codebase follows red/green TDD on `src/core` — the OpenAI client, SSE parser, tool registry, and agent loop are all pure TypeScript with no `vscode` imports, tested against mocks.
-
-## Architecture
-
-```
-webview/         React chat UI (runs in webview sandbox)
-src/extension/   VS Code glue: webview provider, message bridge, WorkspaceHost impl
-src/core/        Editor-agnostic agent: OpenAI client, agent loop, tools
-```
-
-The webview talks to the extension host over `postMessage`. The extension host runs the agent loop, which calls LM Studio over HTTP and dispatches tool calls through a `WorkspaceHost` interface.
+If you want to work on the extension itself, see [CONTRIBUTING.md](CONTRIBUTING.md) for developer setup, test workflows, and architecture notes. Near-term fixes are tracked in [TODO.md](TODO.md). Publishing is documented in [docs/PUBLISHING.md](docs/PUBLISHING.md).
 
 ## Known limitations (MVP)
 
 - Tool-calling quality varies a lot between local models; small models may emit malformed calls
-- Single conversation at a time; history is in-memory only
-- `run_command` depends on VS Code terminal shell integration; if shell integration is unavailable, command execution is blocked
-
+- `run_command` uses a persistent shell session (POSIX `SHELL` / Windows PowerShell); on timeout or shell crash, the session is restarted for the next command
+- Extension-host UI glue (`panel.ts`, webview runtime) has thinner automated coverage than `src/core`; prefer extracted helpers for new tests

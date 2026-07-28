@@ -32,6 +32,7 @@ export type ToExtensionMessage =
   | { type: 'approvalResponse'; id: string; approved: boolean }
   | { type: 'stepLimitResponse'; id: string; continueRun: boolean }
   | { type: 'pendingChangeDecision'; id: string; accepted: boolean }
+  | { type: 'reviewPendingChange'; id: string }
   | { type: 'acceptAllPendingChanges' }
   | { type: 'revertLastTurn' }
   | { type: 'pickModel'; model: string }
@@ -60,7 +61,7 @@ export type ToWebviewMessage =
   | { type: 'modeChanged'; mode: ChatMode }
   | { type: 'busy'; value: boolean }
   | { type: 'assistantDelta'; text: string }
-  | { type: 'toolCall'; id: string; name: string; args: string; mutating: boolean }
+  | { type: 'toolCall'; id: string; name: string; args: string; mutating: boolean; command?: string }
   | { type: 'toolResult'; id: string; result: string }
   | {
       type: 'mentionSuggestionsResult';
@@ -77,8 +78,6 @@ export type ToWebviewMessage =
       id: string;
       name: string;
       args: string;
-      /** Unified diff for write_file calls. */
-      diff?: string;
       /** Command preview for run_command calls. */
       command?: string;
     }

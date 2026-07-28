@@ -202,6 +202,16 @@ export function formatToolError(error: StructuredToolError): string {
   return `Error: ${JSON.stringify(error, null, 2)}`;
 }
 
+/** Drop tools the host cannot support (e.g. semantic_search without embeddings). */
+export function filterToolsForHost(tools: ToolSpec[], host: WorkspaceHost): ToolSpec[] {
+  return tools.filter((tool) => {
+    if (tool.name === 'semantic_search') {
+      return typeof host.semanticSearch === 'function';
+    }
+    return true;
+  });
+}
+
 export function createTools(mode: ToolAccessMode = 'agent'): ToolSpec[] {
   const tools: ToolSpec[] = [
     {
@@ -529,14 +539,13 @@ export function createTools(mode: ToolAccessMode = 'agent'): ToolSpec[] {
         const result = host.runCommand
           ? await host.runCommand(command, timeoutMs)
           : await host.exec(command, timeoutMs ?? DEFAULT_COMMAND_TIMEOUT_MS);
-        const parts = [
+        return [
           `exit code: ${result.exitCode}`,
-          result.stdout ? `stdout:\n${truncate(result.stdout, MAX_OUTPUT_CHARS)}` : 'stdout: (empty)',
-        ];
-        if (result.stderr) {
-          parts.push(`stderr:\n${truncate(result.stderr, MAX_OUTPUT_CHARS)}`);
-        }
-        return parts.join('\n');
+          'stdout:',
+          result.stdout ? truncate(result.stdout, MAX_OUTPUT_CHARS) : '(empty)',
+          'stderr:',
+          result.stderr ? truncate(result.stderr, MAX_OUTPUT_CHARS) : '(empty)',
+        ].join('\n');
       },
     },
   ];

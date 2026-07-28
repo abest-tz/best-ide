@@ -3,7 +3,9 @@ import type { WorkspaceHost } from '../src/core/host';
 import {
   createTools,
   executeToolCall,
+  filterToolsForHost,
   findTool,
+  prepareToolCall,
   toToolDefinitions,
 } from '../src/core/tools';
 import type { ToolCall } from '../src/core/types';
@@ -412,9 +414,18 @@ describe('run_command', () => {
       exec: vi.fn().mockResolvedValue({ stdout: 'hi', stderr: 'warn', exitCode: 2 }),
     });
     const result = await executeToolCall(createTools(), call('run_command', { command: 'ls' }), host);
-    expect(result).toContain('hi');
-    expect(result).toContain('warn');
+    expect(result).toContain('stdout:\nhi');
+    expect(result).toContain('stderr:\nwarn');
     expect(result).toContain('exit code: 2');
+  });
+
+  it('always returns explicit stdout and stderr sections', async () => {
+    const host = mockHost({
+      exec: vi.fn().mockResolvedValue({ stdout: '', stderr: '', exitCode: 0 }),
+    });
+    const result = await executeToolCall(createTools(), call('run_command', { command: 'ls' }), host);
+    expect(result).toContain('stdout:\n(empty)');
+    expect(result).toContain('stderr:\n(empty)');
   });
 
   it('prefers runCommand when the host provides it', async () => {
@@ -506,5 +517,52 @@ describe('executeToolCall error handling', () => {
     });
     expect(error.details?.join('\n')).toMatch(/argument "command" must be string/i);
     expect(host.exec).not.toHaveBeenCalled();
+  });
+
+  it('rejects null and array JSON tool arguments', async () => {
+    for (const raw of ['null', '[1,2]']) {
+      const bad: ToolCall = {
+        id: 'c',
+        type: 'function',
+        function: { name: 'list_dir', arguments: raw },
+      };
+      const result = await executeToolCall(createTools(), bad, mockHost());
+      const error = parseToolError(result);
+      expect(error).toMatchObject({
+        code: 'invalid_tool_arguments',
+        tool: 'list_dir',
+        retryable: true,
+      });
+    }
+  });
+
+  it('omits available-tools details when the registry is empty', () => {
+    const prepared = prepareToolCall([], call('read_file', { path: 'a.ts' }));
+    expect(prepared.ok).toBe(false);
+    if (prepared.ok) {
+      return;
+    }
+    expect(prepared.error).toMatchObject({
+      code: 'unknown_tool',
+      tool: 'read_file',
+      retryable: true,
+    });
+    expect(prepared.error.details).toBeUndefined();
+  });
+
+  it('clamps semantic_search limit below the minimum', async () => {
+    const host = mockHost();
+    await executeToolCall(createTools(), call('semantic_search', { query: 'x', limit: -3 }), host);
+    expect(host.semanticSearch).toHaveBeenCalledWith('x', undefined, 1);
+  });
+});
+
+describe('filterToolsForHost', () => {
+  it('keeps semantic_search only when the host implements it', () => {
+    const withSearch = filterToolsForHost(createTools(), mockHost());
+    expect(withSearch.some((tool) => tool.name === 'semantic_search')).toBe(true);
+
+    const withoutSearch = filterToolsForHost(createTools(), mockHost({ semanticSearch: undefined }));
+    expect(withoutSearch.some((tool) => tool.name === 'semantic_search')).toBe(false);
   });
 });

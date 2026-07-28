@@ -53,7 +53,7 @@ You have tools to read files, list directories, search code with regex and seman
 - When done, reply with a brief summary of what you did. Do not call tools once the task is complete.`;
 
 const DEFAULT_MAX_STEPS = 25;
-const PRE_APPROVAL_TOOL_NAMES = new Set(['run_command']);
+const PRE_APPROVAL_TOOL_NAMES = new Set(['run_command', 'mcp_call_tool']);
 
 export class Agent {
   private readonly client: ChatClient;

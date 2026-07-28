@@ -12,13 +12,20 @@ import { postToExtension } from './vscodeApi';
 type TranscriptItem =
   | { kind: 'user'; text: string }
   | { kind: 'assistant'; text: string; closed: boolean }
-  | { kind: 'tool'; id: string; name: string; args: string; mutating: boolean; result?: string }
+  | {
+      kind: 'tool';
+      id: string;
+      name: string;
+      args: string;
+      mutating: boolean;
+      command?: string;
+      result?: string;
+    }
   | {
       kind: 'approval';
       id: string;
       name: string;
       args: string;
-      diff?: string;
       command?: string;
       resolved: boolean;
       approved?: boolean;
@@ -62,28 +69,56 @@ const EMPTY_MENTION_SUGGESTIONS: MentionSuggestionState = {
 
 marked.setOptions({ gfm: true, breaks: true });
 
+interface ParsedRunCommandResult {
+  exitCode?: string;
+  stdout: string;
+  stderr: string;
+}
+
+function parseRunCommandResult(result: string | undefined): ParsedRunCommandResult | undefined {
+  if (result === undefined) {
+    return undefined;
+  }
+  const exitMatch = /^exit code:\s*(-?\d+)/i.exec(result);
+  if (!exitMatch) {
+    return undefined;
+  }
+  const stdoutMarker = '\nstdout:\n';
+  const stderrMarker = '\nstderr:\n';
+  const stdoutStart = result.indexOf(stdoutMarker);
+  if (stdoutStart === -1) {
+    return undefined;
+  }
+  const stderrStart = result.indexOf(stderrMarker, stdoutStart + stdoutMarker.length);
+  if (stderrStart === -1) {
+    return undefined;
+  }
+  return {
+    exitCode: exitMatch[1],
+    stdout: result.slice(stdoutStart + stdoutMarker.length, stderrStart).trim(),
+    stderr: result.slice(stderrStart + stderrMarker.length).trim(),
+  };
+}
+
+function parseRunCommandFromArgs(args: string): string | undefined {
+  try {
+    const parsed = JSON.parse(args) as Record<string, unknown>;
+    return typeof parsed.command === 'string' ? parsed.command : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 function Markdown({ text }: { text: string }): React.JSX.Element {
   // CSP blocks inline scripts (nonce-only), so rendered HTML cannot execute code.
   return <div dangerouslySetInnerHTML={{ __html: marked.parse(text, { async: false }) }} />;
 }
 
-function DiffView({ diff }: { diff: string }): React.JSX.Element {
-  const lines = diff.split('\n').filter((line) => !line.startsWith('\\ No newline'));
-  return (
-    <pre className="diff" role="region" aria-label="Diff preview">
-      {lines.map((line, i) => {
-        const cls = line.startsWith('+') ? 'diff-add' : line.startsWith('-') ? 'diff-del' : '';
-        return (
-          <div key={i} className={cls}>
-            {line || ' '}
-          </div>
-        );
-      })}
-    </pre>
-  );
-}
-
 function ToolCard({ item }: { item: Extract<TranscriptItem, { kind: 'tool' }> }): React.JSX.Element {
+  const isRunCommand = item.name === 'run_command';
+  const command = item.command ?? parseRunCommandFromArgs(item.args);
+  const parsedRunCommandResult = isRunCommand ? parseRunCommandResult(item.result) : undefined;
+
   return (
     <details className="tool-card" aria-label={`Tool call ${item.name}`}>
       <summary>
@@ -93,8 +128,33 @@ function ToolCard({ item }: { item: Extract<TranscriptItem, { kind: 'tool' }> })
         </span>
       </summary>
       <div className="tool-body">
-        <pre>{item.args || '{}'}</pre>
-        {item.result !== undefined && <pre>{item.result}</pre>}
+        {isRunCommand ? (
+          <>
+            <div className="tool-section-label">Command</div>
+            <pre className="command">{command ? `$ ${command}` : item.args || '{}'}</pre>
+            {item.result !== undefined && (
+              <>
+                <div className="tool-section-label">Result</div>
+                {parsedRunCommandResult ? (
+                  <>
+                    <pre className="command">exit code: {parsedRunCommandResult.exitCode ?? '?'}</pre>
+                    <div className="tool-section-label">stdout</div>
+                    <pre>{parsedRunCommandResult.stdout || '(empty)'}</pre>
+                    <div className="tool-section-label">stderr</div>
+                    <pre>{parsedRunCommandResult.stderr || '(empty)'}</pre>
+                  </>
+                ) : (
+                  <pre>{item.result}</pre>
+                )}
+              </>
+            )}
+          </>
+        ) : (
+          <>
+            <pre>{item.args || '{}'}</pre>
+            {item.result !== undefined && <pre>{item.result}</pre>}
+          </>
+        )}
       </div>
     </details>
   );
@@ -108,15 +168,17 @@ function ApprovalCard({
   const respond = (approved: boolean): void => {
     postToExtension({ type: 'approvalResponse', id: item.id, approved });
   };
+  const title =
+    item.name === 'run_command'
+      ? 'Run command'
+      : item.name === 'mcp_call_tool'
+        ? 'MCP tool call'
+        : item.name;
   return (
     <div className="approval-card" role="group" aria-label="Approval request">
-      <div className="approval-title">
-        {item.name === 'write_file' ? 'Write file' : item.name === 'run_command' ? 'Run command' : item.name}
-      </div>
+      <div className="approval-title">{title}</div>
       <div className="approval-body">
-        {item.diff !== undefined ? (
-          <DiffView diff={item.diff} />
-        ) : item.command !== undefined ? (
+        {item.command !== undefined ? (
           <pre className="command">$ {item.command}</pre>
         ) : (
           <pre className="command">{item.args}</pre>
@@ -183,6 +245,9 @@ function PendingChangeCard({
   const respond = (accepted: boolean): void => {
     postToExtension({ type: 'pendingChangeDecision', id: item.id, accepted });
   };
+  const review = (): void => {
+    postToExtension({ type: 'reviewPendingChange', id: item.id });
+  };
 
   return (
     <div className="approval-card" role="group" aria-label={`Pending change ${item.path}`}>
@@ -196,6 +261,9 @@ function PendingChangeCard({
         </div>
       ) : (
         <div className="approval-actions">
+          <button className="button secondary" aria-label={`Review change for ${item.path}`} onClick={review}>
+            Review
+          </button>
           <button className="button primary" aria-label={`Accept change for ${item.path}`} onClick={() => respond(true)}>
             Accept
           </button>
@@ -345,6 +413,7 @@ export function App(): React.JSX.Element {
             name: message.name,
             args: message.args,
             mutating: message.mutating,
+            command: message.command,
           },
         ]);
         break;
@@ -380,7 +449,6 @@ export function App(): React.JSX.Element {
             id: message.id,
             name: message.name,
             args: message.args,
-            diff: message.diff,
             command: message.command,
             resolved: false,
           },

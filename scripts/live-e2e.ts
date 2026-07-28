@@ -2,10 +2,10 @@
  * Live closed-loop test of the agent core against a running LM Studio server.
  *
  * Usage:
- *   LM_API_TOKEN=... npx esbuild scripts/live-e2e.ts --bundle --platform=node \
- *     --outfile=dist/live-e2e.cjs && node dist/live-e2e.cjs
+ *   npm run test:live
  *
- * Optional env: BASE_URL (default http://localhost:1234/v1), MODEL (default: first chat model).
+ * Optional env: BASE_URL (default http://localhost:1234/v1), MODEL, LM_API_TOKEN.
+ * Exits 0 with a skip message when the local server is unreachable (so CI is not blocked).
  */
 import { mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -57,12 +57,21 @@ async function main(): Promise<void> {
   const apiKey = process.env['LM_API_TOKEN'];
   const client = new OpenAIClient({ baseUrl, ...(apiKey ? { apiKey } : {}) });
 
-  const models = await client.listModels();
+  let models;
+  try {
+    models = await client.listModels();
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    console.log(`Skipping live e2e: model server unreachable at ${baseUrl} (${reason}).`);
+    return;
+  }
+
   console.log('models:', models.map((m) => m.id).join(', '));
   const model =
     process.env['MODEL'] ?? models.find((m) => !m.id.includes('embed'))?.id ?? models[0]?.id;
   if (!model) {
-    throw new Error('no models available');
+    console.log('Skipping live e2e: no models available.');
+    return;
   }
   console.log('using model:', model);
 

@@ -56,6 +56,11 @@
         "title": "Best IDE: Reject Agent Change"
       },
       {
+        "command": "bestIde.reviewAgentChange",
+        "icon": "$(diff)",
+        "title": "Best IDE: Review Agent Change"
+      },
+      {
         "command": "bestIde.acceptAllAgentChanges",
         "icon": "$(check-all)",
         "title": "Best IDE: Accept All Agent Changes"
@@ -70,7 +75,7 @@
       "properties": {
         "bestIde.autoApprove": {
           "default": false,
-          "description": "Automatically approve pre-execution mutating tools (currently run_command) without asking. Use with care.",
+          "description": "Automatically approve pre-execution mutating tools (run_command and mcp_call_tool) without asking. Does not auto-accept pending file diffs. Use with care.",
           "type": "boolean"
         },
         "bestIde.baseUrl": {
@@ -133,7 +138,7 @@
           "items": {
             "type": "string"
           },
-          "markdownDescription": "Optional allowlist of executable names for `run_command` in the integrated terminal. When this list is non-empty, every command segment (`&&`, `|`, `;`) must use an allowlisted executable.",
+          "markdownDescription": "Optional allowlist of executable names for `run_command` in the agent shell session. When this list is non-empty, every command segment (`&&`, `|`, `;`) must use an allowlisted executable.",
           "type": "array"
         },
         "bestIde.runCommand.denylist": {
@@ -234,6 +239,12 @@
         "key": "ctrl+alt+r",
         "mac": "cmd+alt+r",
         "when": "resourceScheme == bestide-pending && bestIde.hasPendingChanges"
+      },
+      {
+        "command": "bestIde.reviewAgentChange",
+        "key": "ctrl+alt+d",
+        "mac": "cmd+alt+d",
+        "when": "bestIde.hasPendingChanges"
       }
     ],
     "menus": {
@@ -249,6 +260,12 @@
           "group": "navigation@1",
           "when": "resourceScheme == bestide-pending",
           "title": "Reject Agent Change"
+        },
+        {
+          "command": "bestIde.reviewAgentChange",
+          "group": "navigation@1.5",
+          "when": "bestIde.hasPendingChanges",
+          "title": "Review Agent Change"
         },
         {
           "command": "bestIde.acceptAllAgentChanges",
@@ -324,6 +341,7 @@
     "@vitest/coverage-v8": "^3.0.0",
     "@vscode/vsce": "^3.9.2",
     "esbuild": "^0.25.0",
+    "ovsx": "^0.10.12",
     "react": "^18.3.0",
     "react-dom": "^18.3.0",
     "typescript": "^5.7.0",
@@ -333,6 +351,7 @@
   "engines": {
     "vscode": "^1.96.0"
   },
+  "icon": "media/icon.png",
   "license": "MIT",
   "main": "./dist/extension.js",
   "name": "best-ide-agent",
@@ -345,12 +364,17 @@
   "scripts": {
     "build": "node esbuild.mjs",
     "coverage": "vitest run --coverage",
+    "dev": "npm run watch",
+    "install:local": "bash scripts/install-local.sh",
     "package": "npm run typecheck && npm run test && npm run build",
+    "publish:marketplace": "vsce publish --azure-credential --no-dependencies",
+    "publish:ovsx": "ovsx publish",
     "test": "vitest run",
+    "test:live": "node esbuild.mjs --live-e2e && node dist/live-e2e.cjs",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
-    "vsix": "node esbuild.mjs --production && vsce package --no-dependencies --allow-missing-repository",
+    "vsix": "node esbuild.mjs --production && vsce package --no-dependencies",
     "watch": "node esbuild.mjs --watch"
   },
-  "version": "0.2.0"
+  "version": "0.3.0"
 }

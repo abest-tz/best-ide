@@ -7,6 +7,31 @@
       "group": "build",
       "problemMatcher": "$tsc",
       "label": "npm: build"
+    },
+    {
+      "type": "npm",
+      "script": "watch",
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      },
+      "isBackground": true,
+      "problemMatcher": {
+        "owner": "esbuild",
+        "pattern": {
+          "regexp": "^$"
+        },
+        "background": {
+          "activeOnStart": true,
+          "beginsPattern": ".",
+          "endsPattern": "(watching\\.\\.\\.|build complete|rebuild complete)"
+        }
+      },
+      "label": "npm: watch",
+      "presentation": {
+        "reveal": "silent",
+        "panel": "shared"
+      }
     }
   ]
 }

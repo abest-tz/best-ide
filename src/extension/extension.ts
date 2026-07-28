@@ -67,6 +67,9 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand('bestIde.rejectAgentChange', (uri?: vscode.Uri) =>
       provider.rejectAgentChange(uri)
     ),
+    vscode.commands.registerCommand('bestIde.reviewAgentChange', (uri?: vscode.Uri) =>
+      provider.reviewAgentChange(uri)
+    ),
     vscode.commands.registerCommand('bestIde.acceptAllAgentChanges', () => provider.acceptAllAgentChanges()),
     vscode.commands.registerCommand('bestIde.revertLastAgentTurn', () => provider.revertLastAgentTurn())
   );

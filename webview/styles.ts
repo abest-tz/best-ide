@@ -144,6 +144,13 @@ body {
   padding: 6px 10px;
   border-top: 1px solid var(--vscode-panel-border);
 }
+.tool-section-label {
+  margin: 8px 0 2px;
+  color: var(--vscode-descriptionForeground);
+  font-size: 0.82em;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
 .tool-body pre {
   margin: 4px 0;
   white-space: pre-wrap;
@@ -153,11 +160,16 @@ body {
   font-family: var(--vscode-editor-font-family);
   font-size: 0.95em;
 }
+.tool-body pre.command {
+  padding: 6px;
+  background: var(--vscode-textCodeBlock-background);
+  border-radius: 4px;
+}
 
 .approval-card { border-color: var(--vscode-inputValidation-warningBorder, #d29922); }
 .approval-title { font-weight: 600; }
 .approval-body { padding: 6px 10px; }
-.approval-body pre.diff, .approval-body pre.command {
+.approval-body pre.command {
   margin: 4px 0;
   padding: 6px;
   background: var(--vscode-textCodeBlock-background);
@@ -169,8 +181,6 @@ body {
   font-family: var(--vscode-editor-font-family);
   font-size: 0.95em;
 }
-.diff-add { color: var(--vscode-gitDecoration-addedResourceForeground, #2ea043); font-weight: 600; }
-.diff-del { color: var(--vscode-gitDecoration-deletedResourceForeground, #f85149); font-weight: 600; }
 .approval-actions { display: flex; gap: 6px; padding: 0 10px 8px; }
 .approval-resolved { padding: 0 10px 8px; color: var(--vscode-descriptionForeground); font-style: italic; }
 
@@ -329,10 +339,5 @@ body {
   }
   .status-dot.connected { background: CanvasText; }
   .status-dot.disconnected { background: Canvas; }
-
-  .diff-add,
-  .diff-del {
-    text-decoration: underline;
-  }
 }
 `;

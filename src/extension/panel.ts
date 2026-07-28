@@ -36,6 +36,10 @@ import {
 } from './inlineEdit';
 import { normalizeMcpServerConfigs, type McpServerConfig } from './mcpClient';
 import {
+  PendingChangeStore,
+  toPersistedPendingChange,
+} from './pendingChanges';
+import {
   RUN_COMMAND_TIMEOUT_DEFAULT_MS,
   RUN_COMMAND_TIMEOUT_MAX_DEFAULT_MS,
   normalizeRunCommandSandboxSettings,
@@ -194,6 +198,7 @@ export class ChatViewProvider
   private stepLimitRequestCounter = 0;
   private focusComposerPending = false;
   private readonly threadStore: ConversationThreadStore;
+  private readonly pendingChangeStore: PendingChangeStore;
   private readonly pendingApprovals = new Map<string, (approved: boolean) => void>();
   private readonly pendingStepLimitRequests = new Map<string, (continueRun: boolean) => void>();
   private readonly pendingChanges = new Map<string, PendingChange>();
@@ -208,7 +213,9 @@ export class ChatViewProvider
     private readonly getApiKey: () => Promise<string>
   ) {
     this.threadStore = new ConversationThreadStore(context.workspaceState);
+    this.pendingChangeStore = new PendingChangeStore(context.workspaceState);
     this.activeThreadId = this.threadStore.getActiveThread().id;
+    this.restorePendingChanges();
     this.updateCommandContexts();
   }
 
@@ -564,6 +571,9 @@ export class ChatViewProvider
           this.rejectAgentChangeById(message.id);
         }
         break;
+      case 'reviewPendingChange':
+        await this.reviewPendingChangeById(message.id);
+        break;
       case 'acceptAllPendingChanges':
         await this.acceptAllAgentChanges();
         break;
@@ -830,14 +840,24 @@ export class ChatViewProvider
     const embeddingModel = embeddingBackend
       ? resolveEmbeddingModel(config.backendRouting, embeddingBackend)
       : '';
+    const semanticSearchEnabled = embeddingModel.trim() !== '';
     return new VsCodeWorkspaceHost(root, {
-      ...(onWriteFile ? { onWriteFile } : {}),
+      ...(onWriteFile
+        ? {
+            onWriteFile,
+            getPendingContent: (path) => this.pendingChanges.get(path)?.proposedContent,
+          }
+        : {}),
       ...(workspaceFolders.length > 0 ? { workspaceFolders } : {}),
-      semanticSearch: {
-        baseUrl: embeddingBackend?.baseUrl ?? 'http://localhost:1234/v1',
-        apiKey: embeddingBackend?.apiKey ?? '',
-        model: embeddingModel,
-      },
+      ...(semanticSearchEnabled
+        ? {
+            semanticSearch: {
+              baseUrl: embeddingBackend?.baseUrl ?? 'http://localhost:1234/v1',
+              apiKey: embeddingBackend?.apiKey ?? '',
+              model: embeddingModel,
+            },
+          }
+        : {}),
       runCommand: {
         allowlist: config.runCommandAllowlist,
         denylist: config.runCommandDenylist,
@@ -1014,11 +1034,26 @@ export class ChatViewProvider
       this.agentMode !== config.chatMode ||
       this.agentConfigFingerprint !== configFingerprint
     ) {
+      const host = this.createWorkspaceHost(root, config, async (change) => this.stagePendingChange(change));
+      const embeddingBackend =
+        getBackendsForOperation(config.backendRouting, 'embeddings')[0] ?? config.backendRouting.backends[0];
+      const embeddingModel = embeddingBackend
+        ? resolveEmbeddingModel(config.backendRouting, embeddingBackend)
+        : '';
+      const semanticSearchEnabled = embeddingModel.trim() !== '';
+      let tools = createTools(config.chatMode);
+      if (!semanticSearchEnabled) {
+        tools = tools.filter((tool) => tool.name !== 'semantic_search');
+        this.post({
+          type: 'notice',
+          text: 'semantic_search is unavailable; set bestIde.embeddingModel (or routing embeddings) to enable it.',
+        });
+      }
       const systemPrompt = await this.buildSystemPrompt(root);
       this.agent = new Agent({
         client: this.createRoutedChatClient(config),
-        host: this.createWorkspaceHost(root, config, async (change) => this.stagePendingChange(change)),
-        tools: createTools(config.chatMode),
+        host,
+        tools,
         model: this.resolvedModel,
         temperature: config.temperature,
         maxSteps: config.maxSteps,
@@ -1054,14 +1089,25 @@ export class ChatViewProvider
         runPrompt,
         {
           onAssistantText: (delta) => this.post({ type: 'assistantDelta', text: delta }),
-          onToolCall: (call, mutating) =>
+          onToolCall: (call, mutating) => {
+            let command: string | undefined;
+            if (call.function.name === 'run_command') {
+              try {
+                const parsedArgs = parseToolArguments(call.function.arguments);
+                command = typeof parsedArgs['command'] === 'string' ? parsedArgs['command'] : undefined;
+              } catch {
+                command = undefined;
+              }
+            }
             this.post({
               type: 'toolCall',
               id: call.id,
               name: call.function.name,
               args: call.function.arguments,
               mutating,
-            }),
+              ...(command !== undefined ? { command } : {}),
+            });
+          },
           onToolResult: (callId, result) => this.post({ type: 'toolResult', id: callId, result }),
           requestApproval: (call) => this.requestApproval(call),
           onNotice: (notice) => this.post({ type: 'notice', text: notice }),
@@ -1123,14 +1169,16 @@ export class ChatViewProvider
   }
 
   private async requestApproval(call: ToolCall): Promise<boolean> {
-    if (call.function.name !== 'run_command') {
+    if (call.function.name !== 'run_command' && call.function.name !== 'mcp_call_tool') {
       return true;
     }
 
     let command: string | undefined;
     try {
       const args = parseToolArguments(call.function.arguments);
-      command = typeof args['command'] === 'string' ? args['command'] : call.function.arguments;
+      if (call.function.name === 'run_command') {
+        command = typeof args['command'] === 'string' ? args['command'] : call.function.arguments;
+      }
     } catch {
       // Malformed args: still show the approval card with raw arguments.
     }
@@ -1276,6 +1324,31 @@ export class ChatViewProvider
     }
   }
 
+  private restorePendingChanges(): void {
+    const restored = this.pendingChangeStore.list();
+    let maxTurnId = this.turnCounter;
+    for (const entry of restored) {
+      const pending: PendingChange = {
+        id: entry.path,
+        path: entry.path,
+        turnId: entry.turnId,
+        targetUri: vscode.Uri.file(entry.targetFsPath),
+        previousContent: entry.previousContent,
+        proposedContent: entry.proposedContent,
+      };
+      this.pendingChanges.set(pending.path, pending);
+      this.pendingContentEmitter.fire(this.pendingUri(pending.path, 'base'));
+      this.pendingContentEmitter.fire(this.pendingUri(pending.path, 'proposed'));
+      maxTurnId = Math.max(maxTurnId, entry.turnId);
+    }
+    this.turnCounter = maxTurnId;
+  }
+
+  private async persistPendingChanges(): Promise<void> {
+    const payload = [...this.pendingChanges.values()].map(toPersistedPendingChange);
+    await this.pendingChangeStore.save(payload);
+  }
+
   private async stagePendingChange(change: StagedWrite): Promise<void> {
     const turnId = this.activeTurnId ?? this.turnCounter;
     const existing = this.pendingChanges.get(change.path);
@@ -1295,7 +1368,30 @@ export class ChatViewProvider
     this.pendingContentEmitter.fire(proposedUri);
     this.updateCommandContexts();
     this.post({ type: 'pendingChange', id: pending.id, path: pending.path, turnId: pending.turnId });
+    await this.persistPendingChanges();
+  }
 
+  public async reviewAgentChange(target?: vscode.Uri): Promise<void> {
+    const pending = await this.resolvePendingChange(target);
+    if (!pending) {
+      void vscode.window.showInformationMessage('No pending agent change selected.');
+      return;
+    }
+    await this.openPendingDiff(pending);
+  }
+
+  private async reviewPendingChangeById(id: string): Promise<void> {
+    const pending = this.pendingChanges.get(id);
+    if (!pending) {
+      void vscode.window.showInformationMessage('No pending agent change selected.');
+      return;
+    }
+    await this.openPendingDiff(pending);
+  }
+
+  private async openPendingDiff(pending: PendingChange): Promise<void> {
+    const baseUri = this.pendingUri(pending.path, 'base');
+    const proposedUri = this.pendingUri(pending.path, 'proposed');
     await vscode.commands.executeCommand(
       'vscode.diff',
       baseUri,
@@ -1366,6 +1462,7 @@ export class ChatViewProvider
     this.pendingContentEmitter.fire(this.pendingUri(pending.path, 'base'));
     this.pendingContentEmitter.fire(this.pendingUri(pending.path, 'proposed'));
     this.updateCommandContexts();
+    void this.persistPendingChanges();
     this.post({ type: 'pendingChangeResolved', id: pending.id, accepted });
     this.post({
       type: 'notice',
