@@ -1,0 +1,44 @@
+name: Marketplace identity
+
+# Prints the Visual Studio Marketplace profile `id` for the OIDC managed identity.
+# Add that id under: https://marketplace.visualstudio.com/manage/publishers/BestIDE → Members
+# (Creator or Contributor). Do not use AZURE_CLIENT_ID, principalId, or your personal profile id.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  identity:
+    runs-on: ubuntu-latest
+    environment: marketplace
+    steps:
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          allow-no-subscriptions: true
+
+      - name: Print Marketplace profile id
+        run: |
+          set -euo pipefail
+          echo "Signed-in Azure principal:"
+          az account show --query '{user:user,tenantId:tenantId}' -o json
+          echo
+          PROFILE_JSON=$(az rest \
+            -u 'https://app.vssps.visualstudio.com/_apis/profile/profiles/me?api-version=7.1-preview.1' \
+            --resource 499b84ac-1321-427f-aa17-267ca6975798 \
+            -o json)
+          echo "Full profile response:"
+          echo "$PROFILE_JSON"
+          echo
+          ID=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])' <<<"$PROFILE_JSON")
+          echo "========================================"
+          echo "Marketplace member id (copy this):"
+          echo "$ID"
+          echo "========================================"
+          echo "Add it at: https://marketplace.visualstudio.com/manage/publishers/BestIDE → Members"

@@ -11,7 +11,11 @@ Publisher id: `BestIDE` · Extension: `best-ide-agent`
 1. Create/verify publisher **BestIDE** at [Visual Studio Marketplace Manage](https://marketplace.visualstudio.com/manage).
 2. In Microsoft Entra ID, create an app registration (or user-assigned managed identity) with a **federated credential** for this repo. Subject example:
    - `repo:abest-tz/best-ide:environment:marketplace`
-3. Add that identity as a member of the Marketplace publisher.
+3. Add that identity as a member of the Marketplace publisher:
+   - Run **Actions → Marketplace identity → Run workflow** (environment `marketplace`).
+   - Copy the printed **Marketplace member id**.
+   - Paste it at [BestIDE Members](https://marketplace.visualstudio.com/manage/publishers/BestIDE) with role **Creator** or **Contributor**.
+   - Do not use `AZURE_CLIENT_ID`, the Azure `principalId`, or your personal profile id.
 4. In GitHub → Settings → Environments → `marketplace`, set:
 
 | Name | Type | Purpose |
